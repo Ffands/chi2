@@ -33,6 +33,10 @@ class AutoClickService : AccessibilityService() {
     var currentState = ExecutionState.STOPPED
     var allowExtremeSpeed = true
     var enableMultitouch = false
+    var targetLoopCount = 0
+    var targetTimeLimitSec = 0L
+    private var scriptStartTime = 0L
+    private var isNodesVisible = true
 
     private var currentNodeIndex = 0
     private var loopCounter = 0
@@ -53,6 +57,22 @@ class AutoClickService : AccessibilityService() {
         if (!wasExplicitlyClosed) {
             uiManager.showControlBar()
         }
+    }
+
+    fun toggleNodesVisibility() {
+        isNodesVisible = !isNodesVisible
+        uiManager.setNodesVisible(isNodesVisible)
+        Toast.makeText(this, if (isNodesVisible) "Метки показаны" else "Метки скрыты", Toast.LENGTH_SHORT).show()
+    }
+
+    fun clearAllNodes() {
+        nodes.clear()
+        uiManager.clearAllNodes()
+    }
+
+    fun deleteProfile(profileId: String) {
+        profiles.removeAll { it.id == profileId }
+        saveProfilesToPrefs()
     }
 
     fun toggleServiceUI(forceOpen: Boolean = false) {
@@ -141,6 +161,7 @@ class AutoClickService : AccessibilityService() {
         uiManager.updatePlayButtonState(currentState)
         currentNodeIndex = 0
         loopCounter = 0
+        scriptStartTime = System.currentTimeMillis()
         isSubScriptRunning = false
         subScriptNodes = null
         scheduleNextStep(0L)
@@ -170,6 +191,22 @@ class AutoClickService : AccessibilityService() {
     private fun executeCurrentStep() {
         if (currentState != ExecutionState.RUNNING) return
 
+        // Time limit check
+        if (targetTimeLimitSec > 0) {
+            val elapsedSec = (System.currentTimeMillis() - scriptStartTime) / 1000
+            if (elapsedSec >= targetTimeLimitSec) {
+                Toast.makeText(this, "Лимит времени ($targetTimeLimitSec сек) исчерпан", Toast.LENGTH_SHORT).show()
+                stopExecution()
+                return
+            }
+        }
+
+        // Multitouch parallel execution
+        if (enableMultitouch && nodes.isNotEmpty()) {
+            executeMultiTouchStep()
+            return
+        }
+
         if (isSubScriptRunning) {
             val subNodes = subScriptNodes
             if (subNodes != null && subScriptIndex < subNodes.size) {
@@ -197,6 +234,11 @@ class AutoClickService : AccessibilityService() {
         if (currentNodeIndex >= nodes.size) {
             currentNodeIndex = 0
             loopCounter++
+            if (targetLoopCount > 0 && loopCounter >= targetLoopCount) {
+                Toast.makeText(this, "Выполнено $targetLoopCount циклов", Toast.LENGTH_SHORT).show()
+                stopExecution()
+                return
+            }
         }
 
         if (nodes.isEmpty()) {
@@ -223,11 +265,62 @@ class AutoClickService : AccessibilityService() {
             return
         }
 
-        executeNodeGesture(node) {
-            currentNodeIndex++
-            scheduleNextStep(node.delayAfterMs)
+        val delayBefore = node.delayBeforeMs
+        if (delayBefore > 0) {
+            handler.postDelayed({
+                executeNodeGesture(node) {
+                    currentNodeIndex++
+                    scheduleNextStep(node.delayAfterMs)
+                }
+            }, delayBefore)
+        } else {
+            executeNodeGesture(node) {
+                currentNodeIndex++
+                scheduleNextStep(node.delayAfterMs)
+            }
         }
     }
+
+    private fun executeMultiTouchStep() {
+        val builder = GestureDescription.Builder()
+        var maxDelay = 100L
+        for (node in nodes) {
+            uiManager.updateNodeScreenPosition(node)
+            val path = Path()
+            var startX = node.x.toFloat()
+            var startY = node.y.toFloat()
+            if (node.randomizeRadius > 0) {
+                val angle = Math.random() * Math.PI * 2
+                val r = Math.random() * node.randomizeRadius
+                startX += (Math.cos(angle) * r).toFloat()
+                startY += (Math.sin(angle) * r).toFloat()
+            }
+            path.moveTo(startX, startY)
+            val duration = Math.max(10L, node.clickDurationMs)
+            builder.addStroke(GestureDescription.StrokeDescription(path, 0L, duration))
+            if (node.delayAfterMs > maxDelay) maxDelay = node.delayAfterMs
+        }
+
+        try {
+            dispatchGesture(builder.build(), object : GestureResultCallback() {
+                override fun onCompleted(gestureDescription: GestureDescription?) {
+                    loopCounter++
+                    if (targetLoopCount > 0 && loopCounter >= targetLoopCount) {
+                        stopExecution()
+                    } else {
+                        scheduleNextStep(maxDelay)
+                    }
+                }
+                override fun onCancelled(gestureDescription: GestureDescription?) {
+                    scheduleNextStep(maxDelay)
+                }
+            }, null)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            scheduleNextStep(maxDelay)
+        }
+    }
+
 
     private fun evaluateOcrAndExecute(node: TargetNode) {
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
