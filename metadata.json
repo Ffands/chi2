@@ -1,6 +1,8 @@
 {
   "name": "UpwellClick v3",
-  "description": "Продвинутый автокликер с поиском изображений по экрану, антидетектом кликов и функцией Caffeine. Включает настроенную через Action сборку на GitHub.",
+  "description": "Продвинутый автокликер для Android с поддержкой макросов, поиском текста (OCR Latin), антидетектом, фантомными метками и Burst-режимом (30-60+ CPS).",
   "requestFramePermissions": [],
-  "majorCapabilities": []
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }

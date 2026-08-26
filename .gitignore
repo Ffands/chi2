@@ -1,9 +1,8 @@
-node_modules/
-build/
-dist/
-coverage/
+node_modules
+dist
+.gradle
+build
+app/build
+release.jks
 .DS_Store
-*.log
-.env*
-!.env.example
-*.jks
+*.apk

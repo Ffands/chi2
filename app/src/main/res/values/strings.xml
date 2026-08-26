@@ -1,5 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">UpwellClick</string>
-    <string name="accessibility_service_description">Позволяет автокликеру имитировать нажатия на экран для автоматизации кликов.</string>
+    <string name="app_name">UpwellClick v3</string>
+    <string name="accessibility_service_description">Служба автокликера UpwellClick v3 для автоматизации нажатий, свайпов, макросов и распознавания текста (OCR).</string>
 </resources>

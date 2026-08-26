@@ -3,7 +3,6 @@ pluginManagement {
         google()
         mavenCentral()
         gradlePluginPortal()
-        maven { url = uri("https://developer.huawei.com/repo/") }
     }
 }
 dependencyResolutionManagement {
@@ -11,9 +10,9 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-        maven { url = uri("https://jitpack.io") }
-        maven { url = uri("https://developer.huawei.com/repo/") }
+        maven { url = java.net.URI("https://developer.huawei.com/repo/") }
     }
 }
-rootProject.name = "AndroidAutoClicker"
+
+rootProject.name = "UpwellClick"
 include(":app")
