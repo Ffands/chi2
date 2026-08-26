@@ -54,7 +54,7 @@ export default function App() {
             <div className="flex items-center gap-2">
               <h1 className="font-bold text-lg text-white">UpwellClick v3</h1>
               <span className="text-xs px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 font-mono">
-                v1.0.4 (Build 9)
+                v1.0.5 (Build 10)
               </span>
             </div>
             <p className="text-xs text-zinc-400">Продвинутый автокликер Android с OCR и Burst-режимом</p>
