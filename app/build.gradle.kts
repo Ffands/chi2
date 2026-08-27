@@ -24,8 +24,8 @@ android {
         applicationId = "com.example.autoclicker.v3"
         minSdk = 30
         targetSdk = 34
-        versionCode = 10
-        versionName = "1.0.5"
+        versionCode = 6
+        versionName = "1.0.1"
     }
 
     buildTypes {
@@ -39,7 +39,6 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-
     kotlinOptions {
         jvmTarget = "17"
     }

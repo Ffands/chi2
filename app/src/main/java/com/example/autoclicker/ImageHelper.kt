@@ -1,103 +1,68 @@
 package com.example.autoclicker
 
 import android.graphics.Bitmap
-import android.graphics.Rect
-import com.huawei.hms.mlsdk.MLAnalyzerFactory
-import com.huawei.hms.mlsdk.common.MLFrame
-import com.huawei.hms.mlsdk.text.MLLocalTextSetting
-import com.huawei.hms.mlsdk.text.MLText
-import com.huawei.hms.mlsdk.text.MLTextAnalyzer
+import android.graphics.Canvas
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
+import android.graphics.Paint
 
-class ImageHelper {
-
-    private var textAnalyzer: MLTextAnalyzer? = null
-
-    init {
-        try {
-            val setting = MLLocalTextSetting.Factory()
-                .setOCRMode(MLLocalTextSetting.OCR_DETECT_MODE)
-                .setLanguage("en")
-                .create()
-            textAnalyzer = MLAnalyzerFactory.getInstance().getLocalTextAnalyzer(setting)
-        } catch (e: Exception) {
-            e.printStackTrace()
+object ImageHelper {
+    fun preprocessForOCR(src: Bitmap): Bitmap {
+        // Create grayscale + high contrast
+        // Scale x2 (Tesseract prefers larger text, e.g. 30px height)
+        val width = src.width * 2
+        val height = src.height * 2
+        val dest = Bitmap.createScaledBitmap(src, width, height, true)
+        
+        val grayscaleBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(grayscaleBitmap)
+        val paint = Paint()
+        
+        // Color matrix: grayscale
+        val cm = ColorMatrix()
+        cm.setSaturation(0f)
+        
+        // Contrast enhancement
+        val scale = 2.0f
+        val translate = -0.5f * 255f * (scale - 1f)
+        val contrastFilter = ColorMatrix(floatArrayOf(
+            scale, 0f, 0f, 0f, translate,
+            0f, scale, 0f, 0f, translate,
+            0f, 0f, scale, 0f, translate,
+            0f, 0f, 0f, 1f, 0f
+        ))
+        
+        cm.postConcat(contrastFilter)
+        paint.colorFilter = ColorMatrixColorFilter(cm)
+        canvas.drawBitmap(dest, 0f, 0f, paint)
+        
+        // Count dark vs light pixels to decide if we need to invert
+        var lightCount = 0
+        var darkCount = 0
+        val pixels = IntArray(width * height)
+        grayscaleBitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+        for (p in pixels) {
+            val r = (p shr 16) and 0xff
+            if (r > 128) lightCount++ else darkCount++
         }
-    }
-
-    fun findTextInBitmap(
-        bitmap: Bitmap,
-        targetText: String,
-        exactMatch: Boolean,
-        cropRect: Rect? = null,
-        callback: (Boolean, Rect?) -> Unit
-    ) {
-        val analyzer = textAnalyzer
-        if (analyzer == null) {
-            callback(false, null)
-            return
+        
+        // Tesseract prefers dark text on a light background.
+        // If the background is mostly dark, invert the colors.
+        if (darkCount > lightCount) {
+            val invertedBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            val invCanvas = Canvas(invertedBitmap)
+            val invertMatrix = ColorMatrix(floatArrayOf(
+                -1f, 0f, 0f, 0f, 255f,
+                0f, -1f, 0f, 0f, 255f,
+                0f, 0f, -1f, 0f, 255f,
+                0f, 0f, 0f, 1f, 0f
+            ))
+            paint.colorFilter = ColorMatrixColorFilter(invertMatrix)
+            invCanvas.drawBitmap(grayscaleBitmap, 0f, 0f, paint)
+            grayscaleBitmap.recycle()
+            return invertedBitmap
         }
-
-        try {
-            val processBitmap = if (cropRect != null) {
-                ImageUtils.cropBitmap(bitmap, cropRect)
-            } else {
-                bitmap
-            }
-
-            val frame = MLFrame.fromBitmap(processBitmap)
-            val task = analyzer.asyncAnalyseFrame(frame)
-
-            task.addOnSuccessListener { mlText: MLText? ->
-                if (mlText == null || mlText.blocks.isEmpty()) {
-                    callback(false, null)
-                    return@addOnSuccessListener
-                }
-
-                var found = false
-                var matchRect: Rect? = null
-
-                val cleanTarget = targetText.trim().lowercase()
-
-                for (block in mlText.blocks) {
-                    val blockText = block.stringValue.trim().lowercase()
-                    val isMatch = if (exactMatch) {
-                        blockText == cleanTarget
-                    } else {
-                        blockText.contains(cleanTarget)
-                    }
-
-                    if (isMatch) {
-                        val border = block.border
-                        if (border != null) {
-                            val offsetX = cropRect?.left ?: 0
-                            val offsetY = cropRect?.top ?: 0
-                            matchRect = Rect(
-                                border.left + offsetX,
-                                border.top + offsetY,
-                                border.right + offsetX,
-                                border.bottom + offsetY
-                            )
-                        }
-                        found = true
-                        break
-                    }
-                }
-
-                callback(found, matchRect)
-            }.addOnFailureListener {
-                callback(false, null)
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            callback(false, null)
-        }
-    }
-
-    fun release() {
-        try {
-            textAnalyzer?.stop()
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
+        
+        return grayscaleBitmap
     }
 }
