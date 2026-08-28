@@ -174,10 +174,11 @@ class AutoClickService : AccessibilityService() {
     private fun processGestureQueue() {
         if (gestureQueue.isEmpty() || !isPlaying) return
         if (isDispatchingGesture && !allowExtremeSpeed) return
+        
         val gesture = gestureQueue.poll() ?: return
         
         isDispatchingGesture = true
-        dispatchGesture(gesture, object : android.accessibilityservice.AccessibilityService.GestureResultCallback() {
+        val success = dispatchGesture(gesture, object : android.accessibilityservice.AccessibilityService.GestureResultCallback() {
             override fun onCompleted(gestureDescription: android.accessibilityservice.GestureDescription?) {
                 if (!allowExtremeSpeed) {
                     isDispatchingGesture = false
@@ -191,10 +192,17 @@ class AutoClickService : AccessibilityService() {
                 }
             }
         }, null)
-
+        
+        if (!success) {
+            if (!allowExtremeSpeed) {
+                isDispatchingGesture = false
+                processGestureQueue()
+            }
+        }
+        
         if (allowExtremeSpeed) {
             isDispatchingGesture = false
-            handler.post { processGestureQueue() }
+            handler.post { processGestureQueue() } // Continue immediately
         }
     }
     
@@ -453,6 +461,8 @@ class AutoClickService : AccessibilityService() {
         if (thread.currentNodeId == -1) {
             if (thread.callStack.isNotEmpty()) {
                 val frame = thread.callStack.pop()
+                if (thread.phantomId != null && ::uiManager.isInitialized) uiManager.hidePhantomNodes(thread.phantomId!!)
+                thread.phantomId = frame.phantomId
                 thread.currentNodeId = frame.returnNodeId
                 thread.currentScriptNodes = frame.scriptNodes
                 thread.currentRepetition = frame.repetition
@@ -461,6 +471,7 @@ class AutoClickService : AccessibilityService() {
                 return
             }
             thread.isActive = false
+            if (thread.phantomId != null && ::uiManager.isInitialized) uiManager.hidePhantomNodes(thread.phantomId!!)
             if (::uiManager.isInitialized) uiManager.logDebug("Поток ${thread.threadId}: Достигнут шаг -1")
             checkAllThreadsStopped()
             return
@@ -484,6 +495,8 @@ class AutoClickService : AccessibilityService() {
         if (node == null) {
             if (thread.callStack.isNotEmpty()) {
                 val frame = thread.callStack.pop()
+                if (thread.phantomId != null && ::uiManager.isInitialized) uiManager.hidePhantomNodes(thread.phantomId!!)
+                thread.phantomId = frame.phantomId
                 thread.currentNodeId = frame.returnNodeId
                 thread.currentScriptNodes = frame.scriptNodes
                 thread.currentRepetition = frame.repetition
@@ -620,16 +633,17 @@ class AutoClickService : AccessibilityService() {
             updateHighlight()
 
             val randomDelay = if (node.randomizeDelayMs > 0) (0..node.randomizeDelayMs).random() else 0L
-            val minDelay = if (allowExtremeSpeed) 0L else 30L
-            
             val finalDelay = if (!isMatch && thread.currentNodeId == node.id) {
-                val pollDelay = if (node.triggerMode == 2) 300L else 150L
-                Math.max(pollDelay, minDelay)
+                if (node.triggerMode == 2) 300L else 150L
             } else {
-                Math.max(minDelay, node.delayAfterMs + randomDelay)
+                if (allowExtremeSpeed) 0L else Math.max(0L, node.delayAfterMs + randomDelay)
             }
 
-            handler.postDelayed({ executeThread(thread) }, finalDelay)
+            if (finalDelay <= 0L) {
+                handler.post { executeThread(thread) }
+            } else {
+                handler.postDelayed({ executeThread(thread) }, finalDelay)
+            }
         }
     }
 
@@ -716,8 +730,11 @@ class AutoClickService : AccessibilityService() {
                         }
                         path.lineTo(eX, eY)
                     }
+                } else {
+                    path.lineTo(startX + 1f, startY + 1f)
                 }
-                val stroke = GestureDescription.StrokeDescription(path, 0, if (node.isSwipe) node.swipeDurationMs else node.clickDurationMs)
+                val duration = if (allowExtremeSpeed) 1L else (if (node.isSwipe) node.swipeDurationMs else Math.max(1L, node.clickDurationMs))
+                val stroke = GestureDescription.StrokeDescription(path, 0, duration)
                 builder.addStroke(stroke)
             }
             gestureQueue.add(builder.build())
@@ -767,8 +784,11 @@ class AutoClickService : AccessibilityService() {
                         }
                         path.lineTo(eX, eY)
                     }
+                } else {
+                    path.lineTo(startX + 1f, startY + 1f)
                 }
-                val stroke = GestureDescription.StrokeDescription(path, 0, if (node.isSwipe) node.swipeDurationMs else node.clickDurationMs)
+                val duration = if (allowExtremeSpeed) 1L else (if (node.isSwipe) node.swipeDurationMs else Math.max(1L, node.clickDurationMs))
+                val stroke = GestureDescription.StrokeDescription(path, 0, duration)
                 builder.addStroke(stroke)
                 gestureQueue.add(builder.build())
             }
