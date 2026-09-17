@@ -169,6 +169,9 @@ class UIManager(private val service: AutoClickService) {
     var appMode: AppMode = AppMode.ADVANCED
     var uiScale: Float = 1.0f
     var uiAlpha: Float = 0.9f
+    var hudX: Int = 0
+    var hudY: Int = 100
+    var isHudVisible: Boolean = true
 
     fun loadUISettings() {
         val prefs = service.getSharedPreferences("AutoClickerUISettings", android.content.Context.MODE_PRIVATE)
@@ -182,6 +185,10 @@ class UIManager(private val service: AutoClickService) {
         isCaffeineEnabled = prefs.getBoolean("isCaffeineEnabled", false)
         isMenuFullscreen = prefs.getBoolean("isMenuFullscreen", false)
         service.enableMultitouch = prefs.getBoolean("enableMultitouch", false)
+        service.cycleEndDelayMs = prefs.getLong("cycleEndDelayMs", 100L)
+        hudX = prefs.getInt("hudX", 0)
+        hudY = prefs.getInt("hudY", 100)
+        isHudVisible = prefs.getBoolean("isHudVisible", true)
     }
 
     fun saveUISettings() {
@@ -197,6 +204,10 @@ class UIManager(private val service: AutoClickService) {
             putBoolean("isCaffeineEnabled", isCaffeineEnabled)
             putBoolean("isMenuFullscreen", isMenuFullscreen)
             putBoolean("enableMultitouch", service.enableMultitouch)
+            putLong("cycleEndDelayMs", service.cycleEndDelayMs)
+            putInt("hudX", hudX)
+            putInt("hudY", hudY)
+            putBoolean("isHudVisible", isHudVisible)
             apply()
         }
     }
@@ -316,9 +327,17 @@ class UIManager(private val service: AutoClickService) {
     }
 
     fun toggleHudVisibility() {
+        if (floatingControlBar == null) {
+            isHudVisible = true
+            saveUISettings()
+            showFloatingControlBar()
+            return
+        }
         floatingControlBar?.let {
             val isVisible = it.visibility == View.VISIBLE
             it.visibility = if (isVisible) View.GONE else View.VISIBLE
+            isHudVisible = (it.visibility == View.VISIBLE)
+            saveUISettings()
         }
     }
 
@@ -1488,6 +1507,17 @@ class UIManager(private val service: AutoClickService) {
         }
         maxCyclesLayout.addView(maxCyclesEdit)
         layout.addView(maxCyclesLayout)
+        
+        val cycleDelayLayout = LinearLayout(service).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 5, 0, 10) }
+        cycleDelayLayout.addView(TextView(service).apply { text = "Задержка после цикла (мс): "; setTextColor(Color.WHITE) })
+        val cycleDelayEdit = EditText(service).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER
+            setText(service.cycleEndDelayMs.toString())
+            setTextColor(Color.WHITE)
+            layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT)
+        }
+        cycleDelayLayout.addView(cycleDelayEdit)
+        layout.addView(cycleDelayLayout)
 
         val maxTimeLayout = LinearLayout(service).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 5, 0, 10) }
         maxTimeLayout.addView(TextView(service).apply { text = "Время работы (минуты, 0 = ∞): "; setTextColor(Color.WHITE) })
@@ -1544,6 +1574,7 @@ class UIManager(private val service: AutoClickService) {
             setOnClickListener {
                 val cyclesStr = maxCyclesEdit.text.toString().toIntOrNull() ?: 0
                 service.maxCycles = if (cyclesStr > 0) cyclesStr else null
+                service.cycleEndDelayMs = cycleDelayEdit.text.toString().toLongOrNull() ?: 0L
                 val minsStr = maxTimeEdit.text.toString().toLongOrNull() ?: 0L
                 service.maxPlayDurationMs = if (minsStr > 0) minsStr * 60000L else null
                 showMainMenu()

@@ -143,6 +143,7 @@ class AutoClickService : AccessibilityService() {
     var playStartTimeMs: Long = 0L
     var maxPlayDurationMs: Long? = null
     var allowExtremeSpeed = false
+    var cycleEndDelayMs = 100L
     var enableMultitouch = false
     
     data class ExecutionFrame(
@@ -246,7 +247,9 @@ class AutoClickService : AccessibilityService() {
                 android.widget.Toast.makeText(this, "Профиль успешно загружен", android.widget.Toast.LENGTH_SHORT).show()
             }
             
-            uiManager.showFloatingControlBar()
+            if (uiManager.isHudVisible) {
+                uiManager.showFloatingControlBar()
+            }
             
             val filter = android.content.IntentFilter(android.content.Intent.ACTION_SCREEN_OFF)
             registerReceiver(screenReceiver, filter)
@@ -297,6 +300,8 @@ class AutoClickService : AccessibilityService() {
     override fun onStartCommand(intent: android.content.Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == "SHOW_UI") {
             if (::uiManager.isInitialized) {
+                uiManager.isHudVisible = true
+                uiManager.saveUISettings()
                 uiManager.showFloatingControlBar()
             }
         }
@@ -349,6 +354,8 @@ class AutoClickService : AccessibilityService() {
             currentCycle = 0
             playStartTimeMs = System.currentTimeMillis()
             activeThreads.clear()
+            isDispatchingGesture = false
+            gestureQueue.clear()
         if (::uiManager.isInitialized) uiManager.removeAllPhantomNodes()
             
             // Check if user set multiple start points by looking at all unlinked nodes, or just the first one
@@ -516,7 +523,8 @@ class AutoClickService : AccessibilityService() {
                 }
                 thread.currentRepetition = 0
                 if (::uiManager.isInitialized) uiManager.logDebug("Поток ${thread.threadId}: Конец цикла. Запуск ${thread.currentCycle}...")
-                handler.postDelayed({ executeThread(thread) }, 100L)
+                val cycleDelay = if (allowExtremeSpeed) 0L else cycleEndDelayMs
+                if (cycleDelay <= 0L) handler.post { executeThread(thread) } else handler.postDelayed({ executeThread(thread) }, cycleDelay)
             } else {
                 thread.isActive = false
                 checkAllThreadsStopped()
@@ -634,7 +642,7 @@ class AutoClickService : AccessibilityService() {
 
             val randomDelay = if (node.randomizeDelayMs > 0) (0..node.randomizeDelayMs).random() else 0L
             val finalDelay = if (!isMatch && thread.currentNodeId == node.id) {
-                if (node.triggerMode == 2) 300L else 150L
+                Limits.getCheckDelay(allowExtremeSpeed, node.triggerMode == 2)
             } else {
                 if (allowExtremeSpeed) 0L else Math.max(0L, node.delayAfterMs + randomDelay)
             }
@@ -733,7 +741,7 @@ class AutoClickService : AccessibilityService() {
                 } else {
                     path.lineTo(startX + 1f, startY + 1f)
                 }
-                val duration = if (allowExtremeSpeed) 1L else (if (node.isSwipe) node.swipeDurationMs else Math.max(1L, node.clickDurationMs))
+                val duration = if (node.isSwipe) Limits.getSwipeDuration(allowExtremeSpeed, node.swipeDurationMs) else Limits.getClickDuration(allowExtremeSpeed, node.clickDurationMs)
                 val stroke = GestureDescription.StrokeDescription(path, 0, duration)
                 builder.addStroke(stroke)
             }
@@ -787,7 +795,7 @@ class AutoClickService : AccessibilityService() {
                 } else {
                     path.lineTo(startX + 1f, startY + 1f)
                 }
-                val duration = if (allowExtremeSpeed) 1L else (if (node.isSwipe) node.swipeDurationMs else Math.max(1L, node.clickDurationMs))
+                val duration = if (node.isSwipe) Limits.getSwipeDuration(allowExtremeSpeed, node.swipeDurationMs) else Limits.getClickDuration(allowExtremeSpeed, node.clickDurationMs)
                 val stroke = GestureDescription.StrokeDescription(path, 0, duration)
                 builder.addStroke(stroke)
                 gestureQueue.add(builder.build())
@@ -1672,16 +1680,6 @@ class AutoClickService : AccessibilityService() {
     }
 
     override fun onKeyEvent(event: android.view.KeyEvent): Boolean {
-        if (event.keyCode == android.view.KeyEvent.KEYCODE_VOLUME_DOWN) {
-            if (event.action == android.view.KeyEvent.ACTION_DOWN) {
-                if (event.repeatCount == 5) {
-                    if (::uiManager.isInitialized) {
-                        uiManager.toggleHudVisibility()
-                    }
-                    return true
-                }
-            }
-        }
         return super.onKeyEvent(event)
     }
 
