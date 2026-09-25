@@ -143,7 +143,7 @@ class AutoClickService : AccessibilityService() {
     var playStartTimeMs: Long = 0L
     var maxPlayDurationMs: Long? = null
     var allowExtremeSpeed = false
-    var cycleEndDelayMs = 100L
+    var cycleEndDelayMs = 0L
     var enableMultitouch = false
     
     data class ExecutionFrame(
@@ -169,48 +169,67 @@ class AutoClickService : AccessibilityService() {
     val activeThreads = java.util.concurrent.CopyOnWriteArrayList<ExecutionThread>()
     
     // Gesture Queue
-    private val gestureQueue = java.util.concurrent.ConcurrentLinkedQueue<android.accessibilityservice.GestureDescription>()
+    private val gestureQueue = java.util.concurrent.ConcurrentLinkedDeque<android.accessibilityservice.GestureDescription>()
     private var isDispatchingGesture = false
+    private var lastGestureDispatchTimeNs = 0L
+    private val processGestureRunnable = Runnable { processGestureQueue() }
     
     private fun processGestureQueue() {
         if (gestureQueue.isEmpty() || !isPlaying) return
-        if (isDispatchingGesture && !allowExtremeSpeed) return
         
-        val gesture = gestureQueue.poll() ?: return
+        // Pacing: 3ms without flag (~300 CPS), 1.5ms with extreme flag (~600+ CPS)
+        val minIntervalNs = if (allowExtremeSpeed) 1_500_000L else 3_000_000L
+        val now = System.nanoTime()
+        val elapsed = now - lastGestureDispatchTimeNs
+        
+        if (elapsed < minIntervalNs) {
+            val waitMs = Math.max(1L, (minIntervalNs - elapsed) / 1_000_000L)
+            handler.removeCallbacks(processGestureRunnable)
+            handler.postDelayed(processGestureRunnable, waitMs)
+            return
+        }
+        
+        val gesture = gestureQueue.pollFirst() ?: return
+        lastGestureDispatchTimeNs = System.nanoTime()
         
         isDispatchingGesture = true
         val success = dispatchGesture(gesture, object : android.accessibilityservice.AccessibilityService.GestureResultCallback() {
             override fun onCompleted(gestureDescription: android.accessibilityservice.GestureDescription?) {
-                if (!allowExtremeSpeed) {
-                    isDispatchingGesture = false
+                isDispatchingGesture = false
+                if (!gestureQueue.isEmpty() && isPlaying) {
                     processGestureQueue()
                 }
             }
             override fun onCancelled(gestureDescription: android.accessibilityservice.GestureDescription?) {
-                if (!allowExtremeSpeed) {
-                    isDispatchingGesture = false
+                isDispatchingGesture = false
+                if (!gestureQueue.isEmpty() && isPlaying) {
                     processGestureQueue()
                 }
             }
         }, null)
         
         if (!success) {
-            if (!allowExtremeSpeed) {
-                isDispatchingGesture = false
-                processGestureQueue()
-            }
-        }
-        
-        if (allowExtremeSpeed) {
             isDispatchingGesture = false
-            handler.post { processGestureQueue() } // Continue immediately
+            gestureQueue.addFirst(gesture)
+            handler.removeCallbacks(processGestureRunnable)
+            handler.postDelayed(processGestureRunnable, 1L)
+        } else {
+            if (!gestureQueue.isEmpty() && isPlaying) {
+                handler.removeCallbacks(processGestureRunnable)
+                val nextDelay = if (allowExtremeSpeed) 1L else 3L
+                handler.postDelayed(processGestureRunnable, nextDelay)
+            }
         }
     }
     
+    private var lastHighlightedIds: List<Int>? = null
     fun updateHighlight() {
         if (::uiManager.isInitialized) {
             val activeIds = activeThreads.mapNotNull { it.currentNodeId }
-            uiManager.updateCurrentNodeHighlight(activeIds)
+            if (activeIds != lastHighlightedIds) {
+                lastHighlightedIds = activeIds
+                uiManager.updateCurrentNodeHighlight(activeIds)
+            }
         }
     }
     val handler = Handler(Looper.getMainLooper())
@@ -524,7 +543,16 @@ class AutoClickService : AccessibilityService() {
                 thread.currentRepetition = 0
                 if (::uiManager.isInitialized) uiManager.logDebug("Поток ${thread.threadId}: Конец цикла. Запуск ${thread.currentCycle}...")
                 val cycleDelay = if (allowExtremeSpeed) 0L else cycleEndDelayMs
-                if (cycleDelay <= 0L) handler.post { executeThread(thread) } else handler.postDelayed({ executeThread(thread) }, cycleDelay)
+                if (cycleDelay <= 0L) {
+                    val nextStepDelay = if (allowExtremeSpeed) 1L else 3L
+                    if (gestureQueue.size > 5) {
+                        handler.postDelayed({ executeThread(thread) }, nextStepDelay + 1L)
+                    } else {
+                        handler.postDelayed({ executeThread(thread) }, nextStepDelay)
+                    }
+                } else {
+                    handler.postDelayed({ executeThread(thread) }, cycleDelay)
+                }
             } else {
                 thread.isActive = false
                 checkAllThreadsStopped()
@@ -532,7 +560,7 @@ class AutoClickService : AccessibilityService() {
             return
         }
 
-        if (activeThreads.firstOrNull()?.threadId == thread.threadId) {
+        if (activeThreads.firstOrNull()?.threadId == thread.threadId && (!allowExtremeSpeed || thread.currentRepetition == 0)) {
             uiManager.updateNodeScreenPosition(node)
         }
 
@@ -648,7 +676,12 @@ class AutoClickService : AccessibilityService() {
             }
 
             if (finalDelay <= 0L) {
-                handler.post { executeThread(thread) }
+                val nextStepDelay = if (allowExtremeSpeed) 1L else 3L
+                if (gestureQueue.size > 5) {
+                    handler.postDelayed({ executeThread(thread) }, nextStepDelay + 1L)
+                } else {
+                    handler.postDelayed({ executeThread(thread) }, nextStepDelay)
+                }
             } else {
                 handler.postDelayed({ executeThread(thread) }, finalDelay)
             }

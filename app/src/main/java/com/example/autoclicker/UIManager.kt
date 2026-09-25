@@ -185,7 +185,8 @@ class UIManager(private val service: AutoClickService) {
         isCaffeineEnabled = prefs.getBoolean("isCaffeineEnabled", false)
         isMenuFullscreen = prefs.getBoolean("isMenuFullscreen", false)
         service.enableMultitouch = prefs.getBoolean("enableMultitouch", false)
-        service.cycleEndDelayMs = prefs.getLong("cycleEndDelayMs", 100L)
+        service.allowExtremeSpeed = prefs.getBoolean("allowExtremeSpeed", false)
+        service.cycleEndDelayMs = prefs.getLong("cycleEndDelayMs", 0L)
         hudX = prefs.getInt("hudX", 0)
         hudY = prefs.getInt("hudY", 100)
         isHudVisible = prefs.getBoolean("isHudVisible", true)
@@ -204,6 +205,7 @@ class UIManager(private val service: AutoClickService) {
             putBoolean("isCaffeineEnabled", isCaffeineEnabled)
             putBoolean("isMenuFullscreen", isMenuFullscreen)
             putBoolean("enableMultitouch", service.enableMultitouch)
+            putBoolean("allowExtremeSpeed", service.allowExtremeSpeed)
             putLong("cycleEndDelayMs", service.cycleEndDelayMs)
             putInt("hudX", hudX)
             putInt("hudY", hudY)
@@ -1556,11 +1558,12 @@ class UIManager(private val service: AutoClickService) {
             gravity = Gravity.CENTER_VERTICAL
         }
         val extremeSpeedCheck = android.widget.CheckBox(service).apply {
-            text = "Разрешить задержку 0 мс (ОПАСНО: может повесить устройство)"
+            text = "Снять ограничение скорости (~600 КПС, по умолчанию ~300 КПС)"
             setTextColor(Color.RED)
             isChecked = service.allowExtremeSpeed
             setOnCheckedChangeListener { _, isChecked ->
                 service.allowExtremeSpeed = isChecked
+                saveUISettings()
             }
         }
         extremeSpeedLayout.addView(extremeSpeedCheck)
@@ -1577,6 +1580,7 @@ class UIManager(private val service: AutoClickService) {
                 service.cycleEndDelayMs = cycleDelayEdit.text.toString().toLongOrNull() ?: 0L
                 val minsStr = maxTimeEdit.text.toString().toLongOrNull() ?: 0L
                 service.maxPlayDurationMs = if (minsStr > 0) minsStr * 60000L else null
+                saveUISettings()
                 showMainMenu()
             }
         }
@@ -3931,11 +3935,18 @@ class UIManager(private val service: AutoClickService) {
         }
     }
 
+    private var lastLogUpdateTime = 0L
+
     fun logDebug(msg: String) {
+        if (!isDebugWindowVisible && debugTextView == null) return
         val time = android.text.format.DateFormat.format("HH:mm:ss", java.util.Date())
         debugLogs.add("[$time] $msg")
         if (debugLogs.size > 100) debugLogs.removeAt(0)
         
+        val now = System.currentTimeMillis()
+        if (now - lastLogUpdateTime < 150L) return
+        lastLogUpdateTime = now
+
         android.os.Handler(android.os.Looper.getMainLooper()).post {
             debugTextView?.let { tv ->
                 tv.text = debugLogs.joinToString("\n")

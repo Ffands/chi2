@@ -1,12 +1,11 @@
 package com.example.autoclicker
 
 object Limits {
-    // Parasitic limits that cut CPS down
-    var CYCLE_END_DELAY = 100L
+    var CYCLE_END_DELAY = 0L
     var CHECK_COLOR_DELAY = 150L
     var CHECK_IMAGE_DELAY = 300L
-    var MIN_CLICK_DURATION = 10L
-    var MIN_SWIPE_DURATION = 30L
+    var MIN_CLICK_DURATION = 1L
+    var MIN_SWIPE_DURATION = 10L
 
     fun getCycleEndDelay(allowExtremeSpeed: Boolean): Long {
         return if (allowExtremeSpeed) 0L else CYCLE_END_DELAY
@@ -17,7 +16,7 @@ object Limits {
     }
 
     fun getClickDuration(allowExtremeSpeed: Boolean, requestedDuration: Long): Long {
-        return if (allowExtremeSpeed) Math.max(1L, requestedDuration) else Math.max(MIN_CLICK_DURATION, requestedDuration)
+        return Math.max(1L, requestedDuration)
     }
 
     fun getSwipeDuration(allowExtremeSpeed: Boolean, requestedDuration: Long): Long {
