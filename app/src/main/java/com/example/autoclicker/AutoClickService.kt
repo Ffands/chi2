@@ -177,15 +177,19 @@ class AutoClickService : AccessibilityService() {
     private fun processGestureQueue() {
         if (gestureQueue.isEmpty() || !isPlaying) return
         
-        // Pacing: 3ms without flag (~300 CPS), 1.5ms with extreme flag (~600+ CPS)
-        val minIntervalNs = if (allowExtremeSpeed) 1_500_000L else 3_000_000L
+        // Pacing: 3.1ms without flag (~300-320 CPS), 1.6ms with extreme flag (~600-625 CPS)
+        val minIntervalNs = if (allowExtremeSpeed) 1_600_000L else 3_100_000L
         val now = System.nanoTime()
         val elapsed = now - lastGestureDispatchTimeNs
         
         if (elapsed < minIntervalNs) {
-            val waitMs = Math.max(1L, (minIntervalNs - elapsed) / 1_000_000L)
+            val remainingNs = minIntervalNs - elapsed
             handler.removeCallbacks(processGestureRunnable)
-            handler.postDelayed(processGestureRunnable, waitMs)
+            if (remainingNs < 1_500_000L) {
+                handler.post(processGestureRunnable)
+            } else {
+                handler.postDelayed(processGestureRunnable, remainingNs / 1_000_000L)
+            }
             return
         }
         
@@ -212,12 +216,16 @@ class AutoClickService : AccessibilityService() {
             isDispatchingGesture = false
             gestureQueue.addFirst(gesture)
             handler.removeCallbacks(processGestureRunnable)
-            handler.postDelayed(processGestureRunnable, 1L)
+            handler.post(processGestureRunnable)
         } else {
             if (!gestureQueue.isEmpty() && isPlaying) {
                 handler.removeCallbacks(processGestureRunnable)
-                val nextDelay = if (allowExtremeSpeed) 1L else 3L
-                handler.postDelayed(processGestureRunnable, nextDelay)
+                val remainingNs = minIntervalNs - (System.nanoTime() - lastGestureDispatchTimeNs)
+                if (remainingNs <= 0L || remainingNs < 1_500_000L) {
+                    handler.post(processGestureRunnable)
+                } else {
+                    handler.postDelayed(processGestureRunnable, remainingNs / 1_000_000L)
+                }
             }
         }
     }
@@ -544,11 +552,10 @@ class AutoClickService : AccessibilityService() {
                 if (::uiManager.isInitialized) uiManager.logDebug("Поток ${thread.threadId}: Конец цикла. Запуск ${thread.currentCycle}...")
                 val cycleDelay = if (allowExtremeSpeed) 0L else cycleEndDelayMs
                 if (cycleDelay <= 0L) {
-                    val nextStepDelay = if (allowExtremeSpeed) 1L else 3L
-                    if (gestureQueue.size > 5) {
-                        handler.postDelayed({ executeThread(thread) }, nextStepDelay + 1L)
+                    if (gestureQueue.size >= 2) {
+                        handler.postDelayed({ executeThread(thread) }, 1L)
                     } else {
-                        handler.postDelayed({ executeThread(thread) }, nextStepDelay)
+                        handler.post { executeThread(thread) }
                     }
                 } else {
                     handler.postDelayed({ executeThread(thread) }, cycleDelay)
@@ -676,11 +683,10 @@ class AutoClickService : AccessibilityService() {
             }
 
             if (finalDelay <= 0L) {
-                val nextStepDelay = if (allowExtremeSpeed) 1L else 3L
-                if (gestureQueue.size > 5) {
-                    handler.postDelayed({ executeThread(thread) }, nextStepDelay + 1L)
+                if (gestureQueue.size >= 2) {
+                    handler.postDelayed({ executeThread(thread) }, 1L)
                 } else {
-                    handler.postDelayed({ executeThread(thread) }, nextStepDelay)
+                    handler.post { executeThread(thread) }
                 }
             } else {
                 handler.postDelayed({ executeThread(thread) }, finalDelay)
