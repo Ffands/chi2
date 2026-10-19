@@ -534,6 +534,9 @@ class UIManager(private val service: AutoClickService) {
                         if (service.isPlaying) service.togglePlay()
                         if (service.isRecording) service.toggleRecording()
                         service.nodes.clear()
+                        service.autoSave()
+                        isHudVisible = false
+                        saveUISettings()
                         removeAllViews()
                         floatingControlBar = null
                         modMenu = null
@@ -948,47 +951,90 @@ class UIManager(private val service: AutoClickService) {
         }
     }
 
+    private var currentActiveTabIndex = 0
+    private var tabButtonsRef = mutableListOf<Button>()
+
+    private fun stylePillButton(btn: Button, bgColorHex: String, strokeHex: String? = null, radiusDp: Int = 10, textSizeSp: Float = 13f) {
+        btn.background = android.graphics.drawable.GradientDrawable().apply {
+            setColor(Color.parseColor(bgColorHex))
+            cornerRadius = dpToPx(radiusDp).toFloat()
+            if (strokeHex != null) {
+                setStroke(dpToPx(1), Color.parseColor(strokeHex))
+            }
+        }
+        btn.setTextColor(Color.WHITE)
+        btn.setScaledTextSize(textSizeSp)
+        btn.setTypeface(null, Typeface.BOLD)
+        btn.isAllCaps = false
+    }
+
+    private fun updateTabSelection(selectedIndex: Int) {
+        currentActiveTabIndex = selectedIndex
+        for ((idx, btn) in tabButtonsRef.withIndex()) {
+            val isSelected = idx == selectedIndex
+            btn.background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.parseColor(if (isSelected) "#2962FF" else "#1D2230"))
+                cornerRadius = dpToPx(8).toFloat()
+            }
+            btn.setTextColor(if (isSelected) Color.WHITE else Color.parseColor("#90A4AE"))
+            btn.setTypeface(null, if (isSelected) Typeface.BOLD else Typeface.NORMAL)
+        }
+    }
+
     private fun buildModMenuLayout(params: WindowManager.LayoutParams): View {
         val root = LinearLayout(service).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.parseColor("#FF111111"))
-            setPadding(10, 10, 10, 10)
-            
+            setPadding(dpToPx(10), dpToPx(10), dpToPx(10), dpToPx(10))
+            alpha = uiAlpha
+
             val drawable = android.graphics.drawable.GradientDrawable()
-            drawable.setColor(Color.parseColor("#FF111111"))
-            drawable.setStroke(dpToPx(2), Color.parseColor("#FF4CAF50"))
-            drawable.cornerRadius = dpToPx(8).toFloat()
+            drawable.setColor(Color.parseColor("#F2121620"))
+            drawable.setStroke(dpToPx(2), Color.parseColor("#3D5AFE"))
+            drawable.cornerRadius = dpToPx(16).toFloat()
             background = drawable
+            clipToOutline = true
         }
-        
+
         val topBar = LinearLayout(service).apply {
             orientation = LinearLayout.HORIZONTAL
-            setBackgroundColor(Color.parseColor("#FF1A1A1A"))
-            setPadding(10, 10, 10, 10)
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dpToPx(8), dpToPx(4), dpToPx(4), dpToPx(8))
         }
         val header = TextView(service).apply {
-            text = "UpwellClick Меню"
+            text = "⠿ UpwellClick"
             setTextColor(Color.WHITE)
             setTypeface(null, Typeface.BOLD)
             setScaledTextSize(16f)
             layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f)
         }
+        val helpTopBtn = Button(service).apply {
+            text = "❓"
+            stylePillButton(this, "#23293A", null, 8, 12f)
+            setPadding(0, 0, 0, 0)
+            layoutParams = LinearLayout.LayoutParams(dpToPx(34), dpToPx(32)).apply {
+                setMargins(0, 0, dpToPx(4), 0)
+            }
+            setOnClickListener { showHelpMenu() }
+        }
         val fullscreenBtn = Button(service).apply {
-            text = "⛶"
-            setPadding(0,0,0,0)
-            setTextColor(Color.parseColor("#FF2196F3"))
-            setBackgroundColor(Color.TRANSPARENT)
+            text = if (isMenuFullscreen) "🗗" else "⛶"
+            stylePillButton(this, "#23293A", null, 8, 13f)
+            setPadding(0, 0, 0, 0)
+            layoutParams = LinearLayout.LayoutParams(dpToPx(34), dpToPx(32)).apply {
+                setMargins(0, 0, dpToPx(4), 0)
+            }
             setOnClickListener { toggleMenuFullscreen() }
         }
-
         val closeBtn = Button(service).apply {
-            text = "X"
-            setPadding(0,0,0,0)
-            setTextColor(Color.parseColor("#FFD50000"))
-            setBackgroundColor(Color.TRANSPARENT)
+            text = "✕"
+            stylePillButton(this, "#3B1E22", null, 8, 13f)
+            setTextColor(Color.parseColor("#FF8A80"))
+            setPadding(0, 0, 0, 0)
+            layoutParams = LinearLayout.LayoutParams(dpToPx(34), dpToPx(32))
             setOnClickListener { modMenu?.visibility = View.GONE }
         }
         topBar.addView(header)
+        topBar.addView(helpTopBtn)
         topBar.addView(fullscreenBtn)
         topBar.addView(closeBtn)
         root.addView(topBar)
@@ -997,15 +1043,37 @@ class UIManager(private val service: AutoClickService) {
 
         val tabsLayout = LinearLayout(service).apply {
             orientation = LinearLayout.HORIZONTAL
-            setBackgroundColor(Color.parseColor("#FF222222"))
+            setPadding(dpToPx(3), dpToPx(3), dpToPx(3), dpToPx(3))
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.parseColor("#181C26"))
+                cornerRadius = dpToPx(10).toFloat()
+            }
+            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            lp.setMargins(0, 0, 0, dpToPx(8))
+            layoutParams = lp
         }
-        val mainTab = Button(service).apply { text = "Метки"; setScaledTextSize(12f); setTextColor(Color.WHITE); setBackgroundColor(Color.TRANSPARENT); layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f); setOnClickListener { showMainMenu() } }
-        val modeTab = Button(service).apply { text = "Режимы"; setScaledTextSize(12f); setTextColor(Color.WHITE); setBackgroundColor(Color.TRANSPARENT); layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f); setOnClickListener { showModeMenu() } }
-        val settTab = Button(service).apply { text = "⚙"; setScaledTextSize(12f); setTextColor(Color.WHITE); setBackgroundColor(Color.TRANSPARENT); layoutParams = LinearLayout.LayoutParams(dpToPx(40), WindowManager.LayoutParams.WRAP_CONTENT); setOnClickListener { showSettingsMenu() } }
-        
-        tabsLayout.addView(mainTab)
-        tabsLayout.addView(modeTab)
-        tabsLayout.addView(settTab)
+
+        tabButtonsRef.clear()
+        val tabDefs = listOf(
+            "🎯 Метки" to { updateTabSelection(0); showMainMenu() },
+            "📁 Профили" to { updateTabSelection(1); showProfileMenu(false) },
+            "🎛 Режим" to { updateTabSelection(2); showModeMenu() },
+            "⚙ Опции" to { updateTabSelection(3); showSettingsMenu() }
+        )
+        for ((idx, pair) in tabDefs.withIndex()) {
+            val tBtn = Button(service).apply {
+                text = pair.first
+                setScaledTextSize(11.5f)
+                isAllCaps = false
+                setPadding(dpToPx(4), dpToPx(6), dpToPx(4), dpToPx(6))
+                layoutParams = LinearLayout.LayoutParams(0, dpToPx(34), 1f).apply {
+                    if (idx < tabDefs.size - 1) setMargins(0, 0, dpToPx(3), 0)
+                }
+                setOnClickListener { pair.second() }
+            }
+            tabButtonsRef.add(tBtn)
+            tabsLayout.addView(tBtn)
+        }
         root.addView(tabsLayout)
 
         menuContentContainer = FrameLayout(service).apply {
@@ -1016,15 +1084,16 @@ class UIManager(private val service: AutoClickService) {
             )
         }
         root.addView(menuContentContainer)
-        
+
+        updateTabSelection(0)
         showMainMenu()
-        
+
         return root
     }
 
     private fun getMenuDefaultWidth(): Int {
         val isLandscape = service.resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
-        return if (isLandscape) dpToPx(450) else dpToPx(300)
+        return if (isLandscape) dpToPx(460) else dpToPx(330)
     }
 
     fun toggleMenuFullscreen() {
@@ -1039,18 +1108,20 @@ class UIManager(private val service: AutoClickService) {
             } else {
                 params.width = getMenuDefaultWidth()
                 params.height = WindowManager.LayoutParams.WRAP_CONTENT
-                params.x = dpToPx(60)
+                params.x = dpToPx(30)
                 params.y = dpToPx(60)
             }
             if (modMenu != null) {
                 windowManager.updateViewLayout(modMenu, params)
-                
                 val currentTag = menuContentContainer.getChildAt(0)?.tag as? String
                 when (currentTag) {
                     "main_menu" -> showMainMenu()
                     "help_menu" -> showHelpMenu()
+                    "tree_menu" -> showScenarioTreeMenu()
                     "profile_menu_save" -> showProfileMenu(true)
                     "profile_menu_load" -> showProfileMenu(false)
+                    "mode_menu" -> showModeMenu()
+                    "settings_menu" -> showSettingsMenu()
                     else -> modMenu?.requestLayout()
                 }
             }
@@ -1067,7 +1138,7 @@ class UIManager(private val service: AutoClickService) {
                 PixelFormat.TRANSLUCENT
             ).apply {
                 gravity = Gravity.TOP or Gravity.START
-                x = if (isMenuFullscreen) 0 else dpToPx(60)
+                x = if (isMenuFullscreen) 0 else dpToPx(30)
                 y = if (isMenuFullscreen) 0 else dpToPx(60)
             }
             modMenuParams = params
@@ -1116,15 +1187,12 @@ class UIManager(private val service: AutoClickService) {
             modMenu = null
             showModMenu()
             when (tagToRestore) {
-                "main_menu" -> showMainMenu()
+                "main_menu" -> { updateTabSelection(0); showMainMenu() }
                 "help_menu" -> showHelpMenu()
-                "profile_menu_save" -> showProfileMenu(true)
-                "profile_menu_load" -> showProfileMenu(false)
-                "settings_menu" -> showSettingsMenu()
-                "edit_menu" -> {
-                    // we can't easily restore the exact node without keeping track of it,
-                    // but for settings menu this is fine.
-                }
+                "tree_menu" -> showScenarioTreeMenu()
+                "profile_menu_save", "profile_menu_load" -> { updateTabSelection(1); showProfileMenu(false) }
+                "mode_menu" -> { updateTabSelection(2); showModeMenu() }
+                "settings_menu" -> { updateTabSelection(3); showSettingsMenu() }
             }
         }
     }
@@ -1132,9 +1200,8 @@ class UIManager(private val service: AutoClickService) {
     fun applyUIScaleChange() {
         val currentTag = menuContentContainer.getChildAt(0)?.tag as? String
         recreateFloatingControlBar()
-        
-        // Remove all markers
-        service.nodes.forEach { 
+
+        service.nodes.forEach {
             nodeViews[it.id]?.let { view -> windowManager.removeView(view) }
             swipeEndViews[it.id]?.let { view -> windowManager.removeView(view) }
             colorCompareViews[it.id]?.let { view -> windowManager.removeView(view) }
@@ -1146,7 +1213,7 @@ class UIManager(private val service: AutoClickService) {
         colorCompareViews.clear()
         textZoneStartViews.clear()
         textZoneEndViews.clear()
-        
+
         recreateAllNodeViews()
         recreateModMenu(currentTag)
     }
@@ -1182,7 +1249,7 @@ class UIManager(private val service: AutoClickService) {
             windowManager.addView(crosshair, params)
             nodeViews[node.id] = crosshair
             nodeParams[node.id] = params
-            
+
             if (node.isSwipe) {
                 createSwipeEndMarker(node)
             }
@@ -1219,7 +1286,7 @@ class UIManager(private val service: AutoClickService) {
             windowManager.addView(crosshair, params)
             nodeViews[node.id] = crosshair
             nodeParams[node.id] = params
-            
+
             if (node.isSwipe) {
                 createSwipeEndMarker(node)
             }
@@ -1233,187 +1300,294 @@ class UIManager(private val service: AutoClickService) {
         updateMenu()
     }
 
+    private fun getNodeSummarySubtitle(node: TargetNode): String {
+        val parts = mutableListOf<String>()
+        when (node.type) {
+            NodeType.CLICK -> {
+                when {
+                    node.isSwipe && node.swipePathPoints.size >= 2 -> parts.add("Кривая (${node.swipeDurationMs} мс)")
+                    node.isSwipe -> parts.add("Свайп ${node.swipeDurationMs} мс")
+                    node.isHold -> parts.add("Зажатие в фоне ${node.holdDurationMs} мс")
+                    else -> parts.add("Клик ${node.clickDurationMs} мс" + if (node.repetitions > 1) " ×${node.repetitions}" else "")
+                }
+                parts.add("пауза ${node.delayAfterMs} мс")
+            }
+            NodeType.CHECK_COLOR -> {
+                parts.add("Только проверка")
+            }
+            NodeType.MANAGER -> {
+                parts.add("Условий: ${node.managerRoutes.size}")
+            }
+            NodeType.MACRO -> {
+                parts.add("Скрипт: ${node.macroProfileName ?: "не выбран"}")
+            }
+        }
+        when (node.triggerMode) {
+            0 -> parts.add("🎨 Цвет")
+            1 -> parts.add("🖼 Картинка")
+            2 -> parts.add(if (node.isSmartOcr) "🔢 Число OCR" else "🔤 Текст OCR")
+        }
+        if (node.isIndependentThread) parts.add("⚡ Поток")
+        if (node.skipSequentialExecution) parts.add("Функция")
+        return parts.joinToString(" • ")
+    }
+
     private fun showMainMenu() {
+        updateTabSelection(0)
         setMenuFocusable(false)
         menuContentContainer.removeAllViews()
-        val layout = LinearLayout(service).apply { 
+        val layout = LinearLayout(service).apply {
             orientation = LinearLayout.VERTICAL
             tag = "main_menu"
         }
 
-        val headerRow = LinearLayout(service).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, 0, 0, 10)
-        }
-        val titleText = TextView(service).apply {
-            text = "Меню Автокликера"
-            setTextColor(Color.WHITE)
-            setScaledTextSize(16f)
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-        }
-        val helpBtn = Button(service).apply {
-            text = "?"
-            layoutParams = LinearLayout.LayoutParams(dpToPx(40), dpToPx(40))
-            setOnClickListener { showHelpMenu() }
-        }
-        headerRow.addView(titleText)
-        headerRow.addView(helpBtn)
-
+        // Play / Record primary bar
         val isRec = appMode == AppMode.RECORD
-        val startBtn = Button(service).apply {
-            text = if (isRec) {
-                if (service.isRecording) "■ СТОП ЗАПИСЬ" else "🔴 СТАРТ ЗАПИСЬ"
-            } else {
-                if (service.isPlaying) "■ ОСТАНОВИТЬ" else "▶ СТАРТ"
-            }
-            setBackgroundColor(if (service.isPlaying || service.isRecording) Color.RED else Color.GREEN)
-            setTextColor(Color.WHITE)
-            setOnClickListener { 
-                if (isRec) {
-                    service.toggleRecording()
-                } else {
-                    service.togglePlay()
-                }
-                updateMenu()
-            }
-        }
-        
-        val addClickBtn = Button(service).apply {
-            text = "+ ДОБАВИТЬ МЕТКУ (Клик/Свайп)"
-            setOnClickListener { addNode(NodeType.CLICK) }
-            visibility = View.VISIBLE
-        }
-
-        // color trigger removed
-
-        val clearAllBtn = Button(service).apply {
-            text = "ОЧИСТИТЬ ВСЕ МЕТКИ"
-            setBackgroundColor(Color.parseColor("#FF5722"))
-            setTextColor(Color.WHITE)
-            setOnClickListener {
-                service.isPlaying = false
-                service.nodes.clear()
-                nodeViews.values.forEach { try { windowManager.removeView(it) } catch (_: Exception) {} }
-                nodeViews.clear()
-                nodeParams.clear()
-                swipeEndViews.values.forEach { try { windowManager.removeView(it) } catch (_: Exception) {} }
-                swipeEndViews.clear()
-                swipeEndParams.clear()
-                textZoneStartViews.values.forEach { try { windowManager.removeView(it) } catch (_: Exception) {} }
-                textZoneStartViews.clear()
-                textZoneStartParams.clear()
-                textZoneEndViews.values.forEach { try { windowManager.removeView(it) } catch (_: Exception) {} }
-                textZoneEndViews.clear()
-                textZoneEndParams.clear()
-                colorCompareViews.values.forEach { try { windowManager.removeView(it) } catch (_: Exception) {} }
-                colorCompareViews.clear()
-                colorCompareParams.clear()
-                nodeCounter = 1
-                service.autoSave()
-                updateMenu()
-                invalidateLines()
-            }
-        }
-
-        val profileLayout = LinearLayout(service).apply {
+        val controlRow = LinearLayout(service).apply {
             orientation = LinearLayout.HORIZONTAL
-            setPadding(0, 10, 0, 5)
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(0, 0, 0, dpToPx(6))
+            }
         }
-        val saveBtn = Button(service).apply {
-            text = "Сохр. План"
-            layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f)
-            setOnClickListener { showProfileMenu(true) }
-        }
-        val loadBtn = Button(service).apply {
-            text = "Загр. План"
-            layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f)
-            setOnClickListener { showProfileMenu(false) }
-        }
-        val treeBtn = Button(service).apply {
-            text = "🌳 Древо"
-            layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f)
-            setOnClickListener { showScenarioTreeMenu() }
-        }
-        profileLayout.addView(saveBtn)
-        profileLayout.addView(loadBtn)
-        profileLayout.addView(treeBtn)
-
-        layout.addView(headerRow)
-        
-        val recordPlayLayout = LinearLayout(service).apply { orientation = LinearLayout.HORIZONTAL }
         if (isRec) {
             val rpStart = Button(service).apply {
-                text = if (service.isRecording) "■ СТОП" else "🔴 ЗАПИСЬ"
-                setBackgroundColor(if (service.isRecording) Color.RED else Color.GREEN)
-                setTextColor(Color.WHITE)
-                layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f)
-                setOnClickListener { 
+                text = if (service.isRecording) "■ Стоп запись" else "🔴 Записать жесты"
+                stylePillButton(this, if (service.isRecording) "#D32F2F" else "#C62828", null, 10, 13f)
+                layoutParams = LinearLayout.LayoutParams(0, dpToPx(40), 1f).apply { setMargins(0, 0, dpToPx(4), 0) }
+                setOnClickListener {
                     service.toggleRecording()
                     updateMenu()
                 }
             }
             val rpPlay = Button(service).apply {
-                text = if (service.isPlaying) "■ СТОП" else "▶ ПРОИГРАТЬ"
-                setBackgroundColor(if (service.isPlaying) Color.RED else Color.parseColor("#FF00C853"))
-                setTextColor(Color.WHITE)
-                layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f)
-                setOnClickListener { 
+                text = if (service.isPlaying) "⏸ Остановить" else "▶ Запустить"
+                stylePillButton(this, if (service.isPlaying) "#D32F2F" else "#00C853", null, 10, 13f)
+                layoutParams = LinearLayout.LayoutParams(0, dpToPx(40), 1f).apply { setMargins(dpToPx(4), 0, 0, 0) }
+                setOnClickListener {
                     service.togglePlay()
                     updateMenu()
                 }
             }
-            recordPlayLayout.addView(rpStart)
-            recordPlayLayout.addView(rpPlay)
-            layout.addView(recordPlayLayout)
+            controlRow.addView(rpStart)
+            controlRow.addView(rpPlay)
         } else {
-            layout.addView(startBtn)
+            val startBtn = Button(service).apply {
+                text = if (service.isPlaying) "⏸ ОСТАНОВИТЬ СЦЕНАРИЙ" else "▶ ЗАПУСТИТЬ СЦЕНАРИЙ"
+                stylePillButton(this, if (service.isPlaying) "#D32F2F" else "#00C853", null, 10, 13.5f)
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dpToPx(40))
+                setOnClickListener {
+                    service.togglePlay()
+                    updateMenu()
+                }
+            }
+            controlRow.addView(startBtn)
         }
-        
-        layout.addView(addClickBtn)
-        layout.addView(clearAllBtn)
-        layout.addView(profileLayout)
+        layout.addView(controlRow)
 
+        // Add Node & Tools Row
+        val actionsRow = LinearLayout(service).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(0, 0, 0, dpToPx(8))
+            }
+        }
+        val addClickBtn = Button(service).apply {
+            text = "➕ Добавить шаг"
+            stylePillButton(this, "#1E88E5", null, 10, 12.5f)
+            layoutParams = LinearLayout.LayoutParams(0, dpToPx(38), 1.2f).apply { setMargins(0, 0, dpToPx(4), 0) }
+            setOnClickListener {
+                if (appMode == AppMode.ADVANCED) {
+                    showQuickAddNodeDialog()
+                } else {
+                    addNode(NodeType.CLICK)
+                    recreateFloatingControlBar()
+                }
+            }
+        }
+        val treeBtn = Button(service).apply {
+            text = "🌳 Схема"
+            stylePillButton(this, "#263238", "#37474F", 10, 12f)
+            layoutParams = LinearLayout.LayoutParams(0, dpToPx(38), 0.75f).apply { setMargins(0, 0, dpToPx(4), 0) }
+            setOnClickListener { showScenarioTreeMenu() }
+        }
+        val clearAllBtn = Button(service).apply {
+            text = "🗑"
+            stylePillButton(this, "#3B1E22", null, 10, 13f)
+            setTextColor(Color.parseColor("#FF8A80"))
+            layoutParams = LinearLayout.LayoutParams(dpToPx(40), dpToPx(38))
+            setOnClickListener {
+                if (service.nodes.isEmpty()) return@setOnClickListener
+                val dialog = android.app.AlertDialog.Builder(service, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                    .setTitle("Очистить все метки?")
+                    .setMessage("Все метки на экране (${service.nodes.size} шт.) будут удалены.")
+                    .setPositiveButton("Удалить") { _, _ ->
+                        if (service.isPlaying) service.togglePlay()
+                        service.nodes.clear()
+                        nodeViews.values.forEach { try { windowManager.removeView(it) } catch (_: Exception) {} }
+                        nodeViews.clear()
+                        nodeParams.clear()
+                        swipeEndViews.values.forEach { try { windowManager.removeView(it) } catch (_: Exception) {} }
+                        swipeEndViews.clear()
+                        swipeEndParams.clear()
+                        textZoneStartViews.values.forEach { try { windowManager.removeView(it) } catch (_: Exception) {} }
+                        textZoneStartViews.clear()
+                        textZoneStartParams.clear()
+                        textZoneEndViews.values.forEach { try { windowManager.removeView(it) } catch (_: Exception) {} }
+                        textZoneEndViews.clear()
+                        textZoneEndParams.clear()
+                        colorCompareViews.values.forEach { try { windowManager.removeView(it) } catch (_: Exception) {} }
+                        colorCompareViews.clear()
+                        colorCompareParams.clear()
+                        nodeCounter = 1
+                        service.autoSave()
+                        recreateFloatingControlBar()
+                        updateMenu()
+                        invalidateLines()
+                    }
+                    .setNegativeButton("Отмена", null)
+                    .create()
+                dialog.window?.setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY)
+                dialog.show()
+            }
+        }
+        actionsRow.addView(addClickBtn)
+        actionsRow.addView(treeBtn)
+        actionsRow.addView(clearAllBtn)
+        layout.addView(actionsRow)
+
+        // List of nodes or friendly empty state
         val scroll = ScrollView(service).apply {
             layoutParams = if (isMenuFullscreen) {
                 LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
             } else {
-                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dpToPx(200))
+                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dpToPx(230))
             }
         }
         val list = LinearLayout(service).apply { orientation = LinearLayout.VERTICAL }
-        
-        service.nodes.forEach { node ->
-            val row = LinearLayout(service).apply { 
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(0, 6, 0, 6)
+
+        if (service.nodes.isEmpty()) {
+            val emptyBox = LinearLayout(service).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                setPadding(dpToPx(16), dpToPx(24), dpToPx(16), dpToPx(24))
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    setColor(Color.parseColor("#181C26"))
+                    cornerRadius = dpToPx(12).toFloat()
+                    setStroke(dpToPx(1), Color.parseColor("#263238"))
+                }
             }
-            val typeLabel = when (node.type) {
-                NodeType.CLICK -> if (node.isSwipe) "🎯 Свайп" else "🎯 Метка"
-                NodeType.CHECK_COLOR -> "👁 Триггер"
-                NodeType.MACRO -> "⚡ Скрипт"
-                NodeType.MANAGER -> "🔀 Менеджер"
-            }
-            val title = TextView(service).apply {
-                text = "[${node.id}] $typeLabel"
+            emptyBox.addView(TextView(service).apply {
+                text = "На экране пока нет меток"
                 setTextColor(Color.WHITE)
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                setTypeface(null, Typeface.BOLD)
+                setScaledTextSize(14f)
+                gravity = Gravity.CENTER
+            })
+            emptyBox.addView(TextView(service).apply {
+                text = "Нажмите «➕ Добавить шаг» выше или кнопку [➕] на панели HUD.\n\nЧтобы настроить свайп, тайминги или поиск цвета — просто нажмите на появившийся прицел!"
+                setTextColor(Color.parseColor("#90A4AE"))
+                setScaledTextSize(12f)
+                gravity = Gravity.CENTER
+                setPadding(0, dpToPx(8), 0, 0)
+            })
+            list.addView(emptyBox)
+        } else {
+            service.nodes.forEach { node ->
+                val cardRow = LinearLayout(service).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(dpToPx(10), dpToPx(8), dpToPx(8), dpToPx(8))
+                    background = android.graphics.drawable.GradientDrawable().apply {
+                        setColor(Color.parseColor("#1B212E"))
+                        cornerRadius = dpToPx(10).toFloat()
+                        val strokeCol = when (node.type) {
+                            NodeType.CLICK -> "#37474F"
+                            NodeType.CHECK_COLOR -> "#1E88E5"
+                            NodeType.MANAGER -> "#8E24AA"
+                            NodeType.MACRO -> "#FB8C00"
+                        }
+                        setStroke(dpToPx(1), Color.parseColor(strokeCol))
+                    }
+                    val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                    lp.setMargins(0, 0, 0, dpToPx(6))
+                    layoutParams = lp
+                    setOnClickListener { showEditNodeMenu(node) }
+                }
+
+                val badgeTv = TextView(service).apply {
+                    text = "#${node.id}"
+                    setTextColor(Color.WHITE)
+                    setTypeface(null, Typeface.BOLD)
+                    setScaledTextSize(12.5f)
+                    gravity = Gravity.CENTER
+                    background = android.graphics.drawable.GradientDrawable().apply {
+                        val badgeCol = when (node.type) {
+                            NodeType.CLICK -> if (node.isSwipe) "#00838F" else "#C62828"
+                            NodeType.CHECK_COLOR -> "#1565C0"
+                            NodeType.MANAGER -> "#6A1B9A"
+                            NodeType.MACRO -> "#EF6C00"
+                        }
+                        setColor(Color.parseColor(badgeCol))
+                        cornerRadius = dpToPx(8).toFloat()
+                    }
+                    layoutParams = LinearLayout.LayoutParams(dpToPx(34), dpToPx(34)).apply {
+                        setMargins(0, 0, dpToPx(8), 0)
+                    }
+                }
+
+                val textCol = LinearLayout(service).apply {
+                    orientation = LinearLayout.VERTICAL
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                }
+                val typeTitle = when (node.type) {
+                    NodeType.CLICK -> when {
+                        node.isSwipe -> "👆 Свайп"
+                        node.isHold -> "✋ Удержание"
+                        else -> "🎯 Клик"
+                    }
+                    NodeType.CHECK_COLOR -> "👁 Проверка (Триггер)"
+                    NodeType.MACRO -> "⚡ Вызов скрипта"
+                    NodeType.MANAGER -> "🔀 Логика (Менеджер)"
+                }
+                textCol.addView(TextView(service).apply {
+                    text = typeTitle
+                    setTextColor(Color.WHITE)
+                    setTypeface(null, Typeface.BOLD)
+                    setScaledTextSize(13f)
+                })
+                textCol.addView(TextView(service).apply {
+                    text = getNodeSummarySubtitle(node)
+                    setTextColor(Color.parseColor("#90A4AE"))
+                    setScaledTextSize(11f)
+                })
+
+                val editBtn = Button(service).apply {
+                    text = "⚙"
+                    stylePillButton(this, "#283246", null, 8, 13f)
+                    setPadding(0, 0, 0, 0)
+                    layoutParams = LinearLayout.LayoutParams(dpToPx(34), dpToPx(34)).apply {
+                        setMargins(dpToPx(4), 0, dpToPx(4), 0)
+                    }
+                    setOnClickListener { showEditNodeMenu(node) }
+                }
+                val delBtn = Button(service).apply {
+                    text = "✕"
+                    stylePillButton(this, "#3B1E22", null, 8, 12f)
+                    setTextColor(Color.parseColor("#FF8A80"))
+                    setPadding(0, 0, 0, 0)
+                    layoutParams = LinearLayout.LayoutParams(dpToPx(34), dpToPx(34))
+                    setOnClickListener {
+                        removeNode(node.id)
+                        recreateFloatingControlBar()
+                    }
+                }
+
+                cardRow.addView(badgeTv)
+                cardRow.addView(textCol)
+                cardRow.addView(editBtn)
+                cardRow.addView(delBtn)
+                list.addView(cardRow)
             }
-            val editBtn = Button(service).apply {
-                text = "Настр."
-                setOnClickListener { showEditNodeMenu(node) }
-            }
-            val delBtn = Button(service).apply {
-                text = "X"
-                setBackgroundColor(Color.RED)
-                setTextColor(Color.WHITE)
-                setOnClickListener { removeNode(node.id) }
-            }
-            row.addView(title)
-            row.addView(editBtn)
-            row.addView(delBtn)
-            list.addView(row)
         }
         scroll.addView(list)
         layout.addView(scroll)
@@ -1427,23 +1601,35 @@ class UIManager(private val service: AutoClickService) {
         val rootLayout = LinearLayout(service).apply {
             orientation = LinearLayout.VERTICAL
             tag = "tree_menu"
-            setPadding(dpToPx(6), dpToPx(6), dpToPx(6), dpToPx(6))
+            setPadding(dpToPx(4), dpToPx(4), dpToPx(4), dpToPx(4))
         }
 
-        val title = TextView(service).apply {
-            text = "🌳 Древо сценария и маршрутов"
+        val headerRow = LinearLayout(service).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, 0, dpToPx(8))
+        }
+        headerRow.addView(TextView(service).apply {
+            text = "🌳 Схема сценария и переходов"
             setTextColor(Color.WHITE)
             setTypeface(null, Typeface.BOLD)
-            setScaledTextSize(16f)
-            setPadding(0, dpToPx(4), 0, dpToPx(10))
+            setScaledTextSize(14.5f)
+            layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        val backTopBtn = Button(service).apply {
+            text = "⬅ Назад"
+            stylePillButton(this, "#283246", null, 8, 11.5f)
+            setPadding(dpToPx(10), dpToPx(4), dpToPx(10), dpToPx(4))
+            setOnClickListener { showMainMenu() }
         }
-        rootLayout.addView(title)
+        headerRow.addView(backTopBtn)
+        rootLayout.addView(headerRow)
 
         val scroll = ScrollView(service).apply {
             layoutParams = if (isMenuFullscreen) {
                 LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
             } else {
-                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dpToPx(320))
+                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dpToPx(270))
             }
         }
         val listLayout = LinearLayout(service).apply {
@@ -1453,7 +1639,7 @@ class UIManager(private val service: AutoClickService) {
         val allIds = service.nodes.map { it.id }.toSet()
         if (service.nodes.isEmpty()) {
             listLayout.addView(TextView(service).apply {
-                text = "Сценарий пуст. Добавьте метки для построения древа."
+                text = "Сценарий пуст. Добавьте хотя бы одну метку."
                 setTextColor(Color.LTGRAY)
                 setPadding(dpToPx(8), dpToPx(12), dpToPx(8), dpToPx(12))
             })
@@ -1466,8 +1652,8 @@ class UIManager(private val service: AutoClickService) {
                     lp.setMargins(0, 0, 0, dpToPx(8))
                     layoutParams = lp
                     background = android.graphics.drawable.GradientDrawable().apply {
-                        setColor(Color.parseColor("#1E242B"))
-                        cornerRadius = dpToPx(8).toFloat()
+                        setColor(Color.parseColor("#1B212E"))
+                        cornerRadius = dpToPx(10).toFloat()
                         val borderColor = when (node.type) {
                             NodeType.CLICK -> Color.parseColor("#EF5350")
                             NodeType.CHECK_COLOR -> Color.parseColor("#42A5F5")
@@ -1480,104 +1666,104 @@ class UIManager(private val service: AutoClickService) {
 
                 val typeTitle = when (node.type) {
                     NodeType.CLICK -> when {
-                        node.isSwipe && node.swipePathPoints.size >= 2 -> "🎯 Метка [${node.id}] — Свайп по кривой (${node.swipePathPoints.size} тчк, ${node.swipeDurationMs} мс)"
-                        node.isSwipe -> "🎯 Метка [${node.id}] — Свайп (${node.swipeDurationMs} мс)"
-                        node.isHold -> "🎯 Метка [${node.id}] — ✋ Удержание в фоне (${node.holdDurationMs} мс)"
-                        else -> "🎯 Метка [${node.id}] — Клик (${node.clickDurationMs} мс, x${node.repetitions})"
+                        node.isSwipe && node.swipePathPoints.size >= 2 -> "🎯 Шаг #${node.id} — Кривой свайп (${node.swipePathPoints.size} тчк, ${node.swipeDurationMs} мс)"
+                        node.isSwipe -> "🎯 Шаг #${node.id} — Свайп (${node.swipeDurationMs} мс)"
+                        node.isHold -> "🎯 Шаг #${node.id} — ✋ Зажатие в фоне (${node.holdDurationMs} мс)"
+                        else -> "🎯 Шаг #${node.id} — Клик (${node.clickDurationMs} мс, ×${node.repetitions})"
                     }
-                    NodeType.CHECK_COLOR -> "👁 Триггер [${node.id}] — Проверка условия"
-                    NodeType.MANAGER -> "🔀 Менеджер [${node.id}] — Маршрутизатор (${node.managerRoutes.size} усл.)"
-                    NodeType.MACRO -> "⚡ Вызов скрипта [${node.id}] — '${node.macroProfileName ?: "Не выбран"}'"
+                    NodeType.CHECK_COLOR -> "👁 Шаг #${node.id} — Проверка условия"
+                    NodeType.MANAGER -> "🔀 Шаг #${node.id} — Менеджер условий (${node.managerRoutes.size} шт.)"
+                    NodeType.MACRO -> "⚡ Шаг #${node.id} — Вызов скрипта '${node.macroProfileName ?: "Не выбран"}'"
                 }
                 val badges = mutableListOf<String>()
-                if (node.isIndependentThread) badges.add("⚡ Поток")
-                if (node.skipSequentialExecution) badges.add("Функция (Вне очереди)")
+                if (node.isIndependentThread) badges.add("⚡ Отдельный поток")
+                if (node.skipSequentialExecution) badges.add("Функция")
                 val headerStr = if (badges.isNotEmpty()) "$typeTitle  [${badges.joinToString(", ")}]" else typeTitle
 
                 card.addView(TextView(service).apply {
                     text = headerStr
                     setTextColor(Color.WHITE)
                     setTypeface(null, Typeface.BOLD)
-                    setScaledTextSize(13f)
+                    setScaledTextSize(12.5f)
                 })
 
                 val details = StringBuilder()
                 if (node.type == NodeType.MANAGER) {
                     if (node.managerRoutes.isEmpty()) {
-                        details.append("  • ⚠️ Нет заданных маршрутов\n")
+                        details.append("  • ⚠️ Условия не добавлены\n")
                     } else {
                         for ((rIdx, route) in node.managerRoutes.withIndex()) {
                             val checkWarn = if (!allIds.contains(route.checkNodeId)) " ⚠️(нет метки)" else ""
                             val goWarn = if (route.onSuccessGoToId != -1 && !allIds.contains(route.onSuccessGoToId)) " ⚠️(нет метки)" else ""
-                            details.append("  • #${rIdx + 1}: Если [${route.checkNodeId}]$checkWarn ➔ Идти к [${route.onSuccessGoToId}]$goWarn\n")
+                            details.append("  • #${rIdx + 1}: Если сработала [#${route.checkNodeId}]$checkWarn ➔ Идти к [#${route.onSuccessGoToId}]$goWarn\n")
                         }
                     }
-                    val fb = node.nextNodeIdOnFail?.toString() ?: "След. по списку"
-                    details.append("  • Иначе (Fallback) ➔ [$fb]\n")
+                    val fb = node.nextNodeIdOnFail?.toString() ?: "Следующий шаг"
+                    details.append("  • Иначе ➔ [$fb]\n")
                 } else {
                     when (node.triggerMode) {
-                        -1 -> details.append("  • Условие: Безусловный\n")
+                        -1 -> details.append("  • Проверка экрана: Нет (выполняется сразу)\n")
                         0 -> {
                             val modeDesc = when {
-                                node.dynamicColorUpdate -> "Адаптивный цвет (${node.colorOperator}${if (node.dynamicColorLookbackMs > 0) ", окно ${node.dynamicColorLookbackMs}мс" else ", пред. кадр"})"
-                                node.compareToNodeId != null -> "Сравнение с меткой [${node.compareToNodeId}]"
+                                node.dynamicColorUpdate -> "Изменение цвета (${node.colorOperator}${if (node.dynamicColorLookbackMs > 0) ", память ${node.dynamicColorLookbackMs}мс" else ""})"
+                                node.compareToNodeId != null -> "Сравнение цвета с меткой [#${node.compareToNodeId}]"
                                 node.colorCompareX != null -> "Сравнение с точкой (${node.colorCompareX}, ${node.colorCompareY})"
                                 else -> "Цвет пикселя ${node.colorOperator} (допуск ${node.colorTolerance})"
                             }
-                            details.append("  • Условие: $modeDesc\n")
+                            details.append("  • Проверка: $modeDesc\n")
                         }
                         1 -> {
-                            val areaInfo = if (node.imageFullScreenSearch) "Весь экран" else "Зона+${node.searchRadius}px"
-                            val clickInfo = if (node.imageClickFoundCenter) ", Клик в центр" else ""
-                            details.append("  • Условие: Фрагмент экрана (${node.colorOperator}, порог ${node.imageThreshold.toInt()}%, $areaInfo$clickInfo)\n")
+                            val areaInfo = if (node.imageFullScreenSearch) "Весь экран" else "В радиусе ${node.searchRadius}px"
+                            val clickInfo = if (node.imageClickFoundCenter) ", Клик по найденному" else ""
+                            details.append("  • Проверка: Картинка (${node.colorOperator}, точность ${node.imageThreshold.toInt()}%, $areaInfo$clickInfo)\n")
                         }
                         2 -> {
                             if (node.isSmartOcr) {
-                                val cmpTarget = if (node.ocrCompareToNodeId != null) "Метка [${node.ocrCompareToNodeId}]" else "${node.ocrTargetValue}"
-                                details.append("  • Условие: Умный OCR (Число ${node.ocrOperator} $cmpTarget)\n")
+                                val cmpTarget = if (node.ocrCompareToNodeId != null) "Метка [#${node.ocrCompareToNodeId}]" else "${node.ocrTargetValue}"
+                                details.append("  • Проверка: Число OCR (${node.ocrOperator} $cmpTarget)\n")
                             } else {
-                                details.append("  • Условие: Текст OCR '${node.targetText ?: ""}' (${node.colorOperator})\n")
+                                details.append("  • Проверка: Текст OCR '${node.targetText ?: ""}' (${node.colorOperator})\n")
                             }
                         }
                     }
 
                     if (node.linkedConditionNodeId != null) {
                         val warn = if (!allIds.contains(node.linkedConditionNodeId)) " ⚠️(не найдена)" else ""
-                        details.append("  • Связка: ${node.linkedConditionOperator} с меткой [${node.linkedConditionNodeId}]$warn\n")
+                        details.append("  • Связка: ${node.linkedConditionOperator} с шагом [#${node.linkedConditionNodeId}]$warn\n")
                     }
 
                     val nextSeq = service.nodes.drop(idx + 1).firstOrNull { !it.skipSequentialExecution }?.id
                     val succStr = when {
-                        node.nextNodeIdOnSuccess == -1 -> "СТОП (-1)"
+                        node.nextNodeIdOnSuccess == -1 -> "Остановить макрос (-1)"
                         node.nextNodeIdOnSuccess != null -> {
                             val warn = if (!allIds.contains(node.nextNodeIdOnSuccess)) " ⚠️(не найдена)" else ""
-                            "[${node.nextNodeIdOnSuccess}]$warn"
+                            "Шаг #${node.nextNodeIdOnSuccess}$warn"
                         }
-                        nextSeq != null -> "[$nextSeq] (по очереди)"
-                        else -> "Конец цикла ↻"
+                        nextSeq != null -> "Шаг #$nextSeq (по очереди)"
+                        else -> "В начало цикла ↻"
                     }
-                    details.append("  • Успех ➔ $succStr (пауза ${node.delayAfterMs} мс)\n")
+                    details.append("  • Дальше ➔ $succStr (пауза ${node.delayAfterMs} мс)\n")
 
                     if (node.triggerMode != -1) {
                         val failStr = when {
-                            node.nextNodeIdOnFail == -1 -> "СТОП (-1)"
+                            node.nextNodeIdOnFail == -1 -> "Остановить макрос (-1)"
                             node.nextNodeIdOnFail != null -> {
                                 val warn = if (!allIds.contains(node.nextNodeIdOnFail)) " ⚠️(не найдена)" else ""
-                                "[${node.nextNodeIdOnFail}]$warn"
+                                "Шаг #${node.nextNodeIdOnFail}$warn"
                             }
                             node.maxCheckCycles != null && node.maxCheckCycles!! > 0 -> {
-                                if (nextSeq != null) "Ждать ${node.maxCheckCycles} раз, затем [$nextSeq]" else "Ждать ${node.maxCheckCycles} раз, затем ↻"
+                                if (nextSeq != null) "Ждать ${node.maxCheckCycles} раз, затем #$nextSeq" else "Ждать ${node.maxCheckCycles} раз, затем ↻"
                             }
-                            else -> "Ждать на [${node.id}] ∞"
+                            else -> "Ждать на #${node.id} пока не появится ∞"
                         }
-                        details.append("  • Провал ➔ $failStr")
+                        details.append("  • Если не найдено ➔ $failStr")
                     }
                 }
 
                 card.addView(TextView(service).apply {
                     text = details.toString().trimEnd()
                     setTextColor(Color.parseColor("#CFD8DC"))
-                    setScaledTextSize(12f)
+                    setScaledTextSize(11.5f)
                     setPadding(0, dpToPx(4), 0, 0)
                 })
 
@@ -1588,359 +1774,469 @@ class UIManager(private val service: AutoClickService) {
 
         scroll.addView(listLayout)
         rootLayout.addView(scroll)
-
-        val backBtn = Button(service).apply {
-            text = "НАЗАД В МЕНЮ"
-            setBackgroundColor(Color.parseColor("#4CAF50"))
-            setTextColor(Color.WHITE)
-            setOnClickListener { showMainMenu() }
-        }
-        rootLayout.addView(backBtn)
         menuContentContainer.addView(rootLayout)
     }
 
     private fun showHelpMenu() {
         setMenuFocusable(true)
         menuContentContainer.removeAllViews()
-        val layout = LinearLayout(service).apply { 
+        val layout = LinearLayout(service).apply {
             orientation = LinearLayout.VERTICAL
         }
-        val title = TextView(service).apply {
-            text = "Справка и Гайд"
+        val headerRow = LinearLayout(service).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, 0, dpToPx(8))
+        }
+        headerRow.addView(TextView(service).apply {
+            text = "📖 Краткая шпаргалка"
             setTextColor(Color.WHITE)
             setTypeface(null, Typeface.BOLD)
-            setScaledTextSize(18f)
-            setPadding(0, dpToPx(10), 0, dpToPx(15))
-            gravity = Gravity.CENTER
+            setScaledTextSize(15f)
+            layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        val backBtnTop = Button(service).apply {
+            text = "⬅ Назад"
+            stylePillButton(this, "#283246", null, 8, 12f)
+            setPadding(dpToPx(10), dpToPx(4), dpToPx(10), dpToPx(4))
+            setOnClickListener { showMainMenu() }
         }
-        layout.addView(title)
-        
+        headerRow.addView(backBtnTop)
+        layout.addView(headerRow)
+
         val scroll = ScrollView(service).apply {
             layoutParams = if (isMenuFullscreen) {
                 LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
             } else {
-                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dpToPx(350))
+                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dpToPx(280))
             }
             tag = "help_menu"
         }
         val textLayout = LinearLayout(service).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dpToPx(10), 0, dpToPx(10), dpToPx(20))
+            setPadding(dpToPx(2), 0, dpToPx(2), dpToPx(12))
         }
 
-        fun createHelpCard(cardTitle: String, cardBody: String, colorHex: String) {
+        fun createHelpCard(cardTitle: String, cardBody: String, accentHex: String) {
             val card = LinearLayout(service).apply {
                 orientation = LinearLayout.VERTICAL
-                setBackgroundColor(Color.parseColor(colorHex))
-                setPadding(dpToPx(15), dpToPx(15), dpToPx(15), dpToPx(15))
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    setColor(Color.parseColor("#181C26"))
+                    cornerRadius = dpToPx(10).toFloat()
+                    setStroke(dpToPx(1), Color.parseColor(accentHex))
+                }
+                setPadding(dpToPx(12), dpToPx(10), dpToPx(12), dpToPx(10))
                 val params = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
                 )
-                params.setMargins(0, 0, 0, dpToPx(15))
+                params.setMargins(0, 0, 0, dpToPx(8))
                 layoutParams = params
             }
             val titleView = TextView(service).apply {
                 text = cardTitle
-                setTextColor(Color.parseColor("#4CAF50"))
+                setTextColor(Color.WHITE)
                 setTypeface(null, Typeface.BOLD)
-                setScaledTextSize(15f)
-                setPadding(0, 0, 0, dpToPx(8))
+                setScaledTextSize(13.5f)
+                setPadding(0, 0, 0, dpToPx(4))
             }
             val bodyView = TextView(service).apply {
                 text = cardBody
-                setTextColor(Color.parseColor("#E0E0E0"))
-                setScaledTextSize(13f)
-                setLineSpacing(0f, 1.25f)
+                setTextColor(Color.parseColor("#CFD8DC"))
+                setScaledTextSize(12f)
+                setLineSpacing(0f, 1.2f)
             }
             card.addView(titleView)
             card.addView(bodyView)
             textLayout.addView(card)
         }
 
-        createHelpCard("👆 Одиночный и Последовательный режим",
-            "В этих режимах всё просто:\n\n" +
-            "• Одиночный: Вы нажимаете Play, и метка быстро кликает в одной точке, пока вы не нажмете Stop.\n" +
-            "• Последовательный: Метки кликают строго по очереди: 1, затем 2, затем 3.\n\n" +
-            "💡 Пример: Нужно собрать 20 наград из ящиков? Ставите метку на ящик, выставляете \"Повторений: 20\" и кликер сделает 20 кликов.", "#222222")
-
-        createHelpCard("🧠 Продвинутый режим (Триггеры)",
-            "Это мозг кликера! Здесь можно делать так, чтобы кликер принимал решения. Метку можно сделать \"ТРИГГЕРОМ\". Она будет смотреть на экран.\n\n" +
-            "Триггер может:\n" +
-            "• Ждать нужный цвет пикселя\n" +
-            "• Искать фрагмент изображения\n" +
-            "• Считывать текст (OCR) с экрана!\n\n" +
-            "💡 Пример: Метка [1] (Триггер) смотрит в угол экрана. Вы задали условие ЖДАТЬ цвет. \"Идти если ДА\": к шагу 2. \"Идти если НЕТ\": к шагу 1. В итоге кликер будет сутками ждать кнопку и кликать (или свайпать), только когда она появится!", "#251A1A")
-
-        createHelpCard("🔄 Свайпы (Перетаскивание)",
-            "Свайпы настраиваются через настройки метки (шестеренка).\n" +
-            "• Простой свайп: Впишите номер метки-цели в поле «Вести к метке №». Скорость свайпа настраивается в поле 'Задержка (мс)'.\n" +
-            "• Записанный свайп: Если вы использовали Режим Записи, вы увидите свайп с точной кривой вашей траектории! Кликер в точности повторит изогнутую линию вашего пальца.\n" +
-            "💡 Совет: Для TikTok / Reels ставьте метку [1] снизу, а метку [2] сверху. Укажите «Вести к 2», и кликер будет перелистывать видео!", "#1A251A")
-
-        createHelpCard("🎥 Режим Записи жестов и Тайминги",
-            "Не хотите настраивать метки? Запишите всё сами!\n\n" +
-            "1. Включите режим «Запись» в меню (кнопка 'Режимы').\n" +
-            "2. Нажмите красную кнопку [REC] на панели.\n" +
-            "3. Пользуйтесь телефоном как обычно: делайте клики, листайте ленту (свайпы по любой траектории).\n" +
-            "4. Нажмите кнопку [STOP] (квадрат).\n" +
-            "5. Готово! Метки создадутся автоматически.\n\n" +
-            "🕒 Тайминги теперь удобные: вы можете в любой настройке (Длительность, Пауза, Анти-Детект) одним нажатием переключать мс (миллисекунды) на сек (секунды)! А также задать настройки таймингов сразу всем меткам.", "#1A1A25")
-
-        createHelpCard("⚙️ Сохранение и Импорт Профилей",
-            "Сценариев может быть много. В меню нажмите \"СЦЕНАРИИ\".\n" +
-            "Тут можно сохранять профили. А еще появились функции ЭКСПОРТ и ИМПОРТ в файл .json!\n" +
-            "Вы можете настроить сложный бот, экспортировать файл и скинуть его другу — он просто загрузит его и запустит!", "#202020")
-
-        createHelpCard("🕵️ Анти-Детект",
-            "Позволяет сделать клики максимально похожими на человеческие.\n\n" +
-            "• Рандомизация паузы: Добавляет случайное ожидание к стандартной паузе.\n" +
-            "• Рандомизация координат (px): Клики/свайпы происходят со случайным отклонением в радиусе. Есть удобная кнопка 'Применить ко всем меткам'!", "#25201A")
-
-        createHelpCard("🖼 Изображения и Поиск со смещением",
-            "В настройках триггера по фрагменту можно задать % совпадения и «Допуск смещения поиска (px)». Даже если кнопка сдвинется, кликер её найдёт!", "#251A25")
-
-        createHelpCard("☕ Кофеин (Не спать)",
-            "В главном меню есть переключатель КОФЕИН. Включите его, и экран вашего устройства не погаснет. Идеально для долгого фарма!", "#1A2525")
+        createHelpCard(
+            "🎯 1. Клики, Свайпы и Удержание",
+            "• Нажмите [➕] для добавления метки. Нажмите на сам прицел, чтобы открыть его настройки.\n" +
+            "• Внутри настроек метки выберите действие: Клик, Свайп (прямой или нарисованный от руки) либо Удержание в фоне (полезно для джойстика ходьбы в играх).",
+            "#2962FF"
+        )
+        createHelpCard(
+            "👁 2. Проверка цвета, картинки или текста (OCR)",
+            "• В режиме «Умный» любая метка может проверять экран перед действием.\n" +
+            "• Цвет пикселя: прицел оснащён лупой в углу, чтобы палец не загораживал точку.\n" +
+            "• Картинка (Фрагмент): выделите рамкой иконку и нажмите «Захватить». Кликер сам найдёт её на экране!\n" +
+            "• Текст (OCR): считывает слова или сравнивает числа (например, цена < 5000).",
+            "#00C853"
+        )
+        createHelpCard(
+            "🎥 3. Запись жестов вживую",
+            "• Во вкладке «Режим» выберите «Запись жестов».\n" +
+            "• Нажмите [🔴] на панели и просто покажите свои нажатия и свайпы пальцем — кликер сам расставит метки и запомнит паузы!",
+            "#FF5252"
+        )
+        createHelpCard(
+            "📁 4. Профили и Быстрая панель (⚡)",
+            "• Во вкладке «Профили» сохраняйте свои сценарии, делитесь ими в файл .json или делайте полный бэкап всех макросов.\n" +
+            "• Нажмите [⚡] на плавающей панели HUD для мгновенного переключения между любимыми профилями.",
+            "#FFD54F"
+        )
 
         scroll.addView(textLayout)
         layout.addView(scroll)
-
-        val backBtn = Button(service).apply {
-            text = "НАЗАД В МЕНЮ"
-            setBackgroundColor(Color.parseColor("#4CAF50"))
-            setTextColor(Color.WHITE)
-            setTypeface(null, Typeface.BOLD)
-            val params = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            )
-            params.setMargins(dpToPx(10), dpToPx(15), dpToPx(10), dpToPx(10))
-            layoutParams = params
-            setOnClickListener { showMainMenu() }
-        }
-        layout.addView(backBtn)
-
         menuContentContainer.addView(layout)
     }
 
     private fun showModeMenu() {
+        updateTabSelection(2)
         setMenuFocusable(false)
         menuContentContainer.removeAllViews()
         val scroll = ScrollView(service).apply {
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.MATCH_PARENT)
+            layoutParams = if (isMenuFullscreen) {
+                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
+            } else {
+                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dpToPx(280))
+            }
+            tag = "mode_menu"
         }
-        val layout = LinearLayout(service).apply { orientation = LinearLayout.VERTICAL; setPadding(10, 10, 10, 10) }
-        
-        layout.addView(TextView(service).apply { text = "Режим работы кликера"; setTextColor(Color.WHITE); setScaledTextSize(16f); setPadding(0, 0, 0, 20) })
+        val layout = LinearLayout(service).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dpToPx(4), dpToPx(4), dpToPx(4), dpToPx(8))
+        }
 
+        layout.addView(TextView(service).apply {
+            text = "Выберите подходящий режим:"
+            setTextColor(Color.parseColor("#B0BEC5"))
+            setScaledTextSize(12.5f)
+            setPadding(0, 0, 0, dpToPx(8))
+        })
+
+        data class ModeCardInfo(val mode: AppMode, val title: String, val subtitle: String, val accent: String)
         val modes = listOf(
-            AppMode.SEQUENTIAL to "Последовательный (Цепочка)",
-            AppMode.ADVANCED to "Продвинутый (Триггеры, Логика)",
-            AppMode.RECORD to "Запись (Клик по экрану ставит метку)"
+            ModeCardInfo(
+                AppMode.SEQUENTIAL,
+                "🎯 Простой режим (Цепочка)",
+                "Идеально для новичков. Метки просто нажимают или свайпают по очереди (1 ➔ 2 ➔ 3). Никаких сложных настроек!",
+                "#00C853"
+            ),
+            ModeCardInfo(
+                AppMode.ADVANCED,
+                "🧠 Умный режим (Триггеры и Логика)",
+                "Полный доступ: проверка цвета с лупой, поиск фрагментов картинок, чтение текста/чисел (OCR), ветвление и подпрограммы.",
+                "#2962FF"
+            ),
+            ModeCardInfo(
+                AppMode.RECORD,
+                "🎥 Режим записи жестов",
+                "На панели появляется кнопка [🔴]. Нажмите её и выполните действия на экране вручную — кликер повторит всё за вами.",
+                "#FF5252"
+            )
         )
 
-        modes.forEach { (mode, desc) ->
-            val btn = Button(service).apply {
-                text = desc
-                setBackgroundColor(if (appMode == mode) Color.parseColor("#4CAF50") else Color.parseColor("#555555"))
-                setTextColor(Color.WHITE)
+        modes.forEach { info ->
+            val isSelected = appMode == info.mode
+            val card = LinearLayout(service).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dpToPx(12), dpToPx(10), dpToPx(12), dpToPx(10))
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    setColor(Color.parseColor(if (isSelected) "#1E293B" else "#161B24"))
+                    cornerRadius = dpToPx(12).toFloat()
+                    setStroke(dpToPx(if (isSelected) 2 else 1), Color.parseColor(if (isSelected) info.accent else "#263238"))
+                }
+                val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                lp.setMargins(0, 0, 0, dpToPx(8))
+                layoutParams = lp
                 setOnClickListener {
-                    if (mode == AppMode.SEQUENTIAL && service.nodes.size > 1) {
-                        val first = service.nodes.firstOrNull()
-                        service.nodes.clear()
-                        nodeViews.values.forEach { windowManager.removeView(it) }
-                        nodeViews.clear()
-                        nodeParams.clear()
-                        swipeEndViews.values.forEach { windowManager.removeView(it) }
-                        swipeEndViews.clear()
-                        swipeEndParams.clear()
-                        textZoneStartViews.values.forEach { windowManager.removeView(it) }
-                        textZoneStartViews.clear()
-                        textZoneStartParams.clear()
-                        textZoneEndViews.values.forEach { windowManager.removeView(it) }
-                        textZoneEndViews.clear()
-                        textZoneEndParams.clear()
-                        colorCompareViews.values.forEach { windowManager.removeView(it) }
-                        colorCompareViews.clear()
-                        colorCompareParams.clear()
-                        if (first != null) {
-                            service.nodes.add(first)
-                            recreateAllNodeViews()
-                        }
-                    } else if (mode == AppMode.SEQUENTIAL) {
-                        // In sequential mode, triggers can stay.
-                    }
-                    appMode = mode
-                    showModeMenu() // redraw
-                    
-                    if (floatingControlBar != null) {
-                        windowManager.removeView(floatingControlBar)
-                        floatingControlBar = null
-                        showFloatingControlBar()
-                    }
+                    appMode = info.mode
+                    service.getSharedPreferences("AutoClickerSettings", Context.MODE_PRIVATE)
+                        .edit().putString("AppMode", info.mode.name).apply()
+                    showModeMenu()
+                    recreateFloatingControlBar()
                     invalidateLines()
                 }
             }
-            layout.addView(btn)
+            val topRow = LinearLayout(service).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            topRow.addView(TextView(service).apply {
+                text = info.title
+                setTextColor(Color.WHITE)
+                setTypeface(null, Typeface.BOLD)
+                setScaledTextSize(13.5f)
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            })
+            if (isSelected) {
+                topRow.addView(TextView(service).apply {
+                    text = "✔ Активен"
+                    setTextColor(Color.parseColor(info.accent))
+                    setTypeface(null, Typeface.BOLD)
+                    setScaledTextSize(11.5f)
+                })
+            }
+            card.addView(topRow)
+            card.addView(TextView(service).apply {
+                text = info.subtitle
+                setTextColor(Color.parseColor("#90A4AE"))
+                setScaledTextSize(11.5f)
+                setPadding(0, dpToPx(4), 0, 0)
+            })
+            layout.addView(card)
         }
-        scroll.tag = "mode_menu"
+
         scroll.addView(layout)
         menuContentContainer.addView(scroll)
     }
 
     private fun showSettingsMenu() {
+        updateTabSelection(3)
         setMenuFocusable(true)
         menuContentContainer.removeAllViews()
         val scroll = ScrollView(service).apply {
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.MATCH_PARENT)
+            layoutParams = if (isMenuFullscreen) {
+                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
+            } else {
+                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dpToPx(290))
+            }
             tag = "settings_menu"
         }
-        val layout = LinearLayout(service).apply { 
+        val layout = LinearLayout(service).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(10, 10, 10, 10)
+            setPadding(dpToPx(4), dpToPx(4), dpToPx(4), dpToPx(8))
         }
-        
-        layout.addView(TextView(service).apply { text = "Настройки интерфейса"; setTextColor(Color.WHITE); setScaledTextSize(16f); setPadding(0, 0, 0, 20) })
 
-        val alphaLayout = LinearLayout(service).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        alphaLayout.addView(TextView(service).apply { text = "Прозрачность UI: "; setTextColor(Color.WHITE) })
-        alphaLayout.addView(Button(service).apply { text = "-"; setOnClickListener { if(uiAlpha > 0.2f) { uiAlpha -= 0.1f; saveUISettings(); applyUISettings(); showSettingsMenu() } } })
-        alphaLayout.addView(TextView(service).apply { text = String.format("%.1f", uiAlpha); setTextColor(Color.YELLOW); setPadding(10,0,10,0) })
-        alphaLayout.addView(Button(service).apply { text = "+"; setOnClickListener { if(uiAlpha < 1.0f) { uiAlpha += 0.1f; saveUISettings(); applyUISettings(); showSettingsMenu() } } })
-        layout.addView(alphaLayout)
+        fun createGroupCard(titleStr: String): LinearLayout {
+            val box = LinearLayout(service).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dpToPx(12), dpToPx(10), dpToPx(12), dpToPx(10))
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    setColor(Color.parseColor("#181C26"))
+                    cornerRadius = dpToPx(12).toFloat()
+                    setStroke(dpToPx(1), Color.parseColor("#263238"))
+                }
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                    setMargins(0, 0, 0, dpToPx(10))
+                }
+            }
+            box.addView(TextView(service).apply {
+                text = titleStr
+                setTextColor(Color.parseColor("#64B5F6"))
+                setTypeface(null, Typeface.BOLD)
+                setScaledTextSize(13f)
+                setPadding(0, 0, 0, dpToPx(6))
+            })
+            layout.addView(box)
+            return box
+        }
 
-        val scaleLayout = LinearLayout(service).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        scaleLayout.addView(TextView(service).apply { text = "Масштаб UI: "; setTextColor(Color.WHITE) })
-        scaleLayout.addView(Button(service).apply { text = "-"; setOnClickListener { if(uiScale > 0.5f) { uiScale -= 0.1f; saveUISettings(); applyUIScaleChange() } } })
-        scaleLayout.addView(TextView(service).apply { text = String.format("%.1f", uiScale); setTextColor(Color.YELLOW); setPadding(10,0,10,0) })
-        scaleLayout.addView(Button(service).apply { text = "+"; setOnClickListener { if(uiScale < 2.0f) { uiScale += 0.1f; saveUISettings(); applyUIScaleChange() } } })
-        layout.addView(scaleLayout)
-        
-        layout.addView(TextView(service).apply { text = "Панель инструментов"; setTextColor(Color.WHITE); setScaledTextSize(14f); setPadding(0, 15, 0, 10) })
-        
-        val pEye = android.widget.CheckBox(service).apply {
-            text = "Кнопка 'Видимость меток' (👁)"
+        // Card 1: Внешний вид и кнопки HUD
+        val uiCard = createGroupCard("🎨 Внешний вид и панель HUD")
+
+        val alphaLayout = LinearLayout(service).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dpToPx(2), 0, dpToPx(4))
+        }
+        alphaLayout.addView(TextView(service).apply {
+            text = "Прозрачность окон:"
             setTextColor(Color.WHITE)
+            setScaledTextSize(12.5f)
+            layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        alphaLayout.addView(Button(service).apply {
+            text = "−"
+            stylePillButton(this, "#283246", null, 8, 14f)
+            setPadding(0, 0, 0, 0)
+            layoutParams = LinearLayout.LayoutParams(dpToPx(34), dpToPx(30))
+            setOnClickListener { if (uiAlpha > 0.3f) { uiAlpha -= 0.1f; saveUISettings(); applyUISettings(); showSettingsMenu() } }
+        })
+        alphaLayout.addView(TextView(service).apply {
+            text = "${(uiAlpha * 100).toInt()}%"
+            setTextColor(Color.WHITE)
+            setTypeface(null, Typeface.BOLD)
+            setScaledTextSize(12.5f)
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(dpToPx(48), WindowManager.LayoutParams.WRAP_CONTENT)
+        })
+        alphaLayout.addView(Button(service).apply {
+            text = "+"
+            stylePillButton(this, "#283246", null, 8, 14f)
+            setPadding(0, 0, 0, 0)
+            layoutParams = LinearLayout.LayoutParams(dpToPx(34), dpToPx(30))
+            setOnClickListener { if (uiAlpha < 1.0f) { uiAlpha = (uiAlpha + 0.1f).coerceAtMost(1.0f); saveUISettings(); applyUISettings(); showSettingsMenu() } }
+        })
+        uiCard.addView(alphaLayout)
+
+        val scaleLayout = LinearLayout(service).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dpToPx(2), 0, dpToPx(6))
+        }
+        scaleLayout.addView(TextView(service).apply {
+            text = "Размер элементов:"
+            setTextColor(Color.WHITE)
+            setScaledTextSize(12.5f)
+            layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        scaleLayout.addView(Button(service).apply {
+            text = "−"
+            stylePillButton(this, "#283246", null, 8, 14f)
+            setPadding(0, 0, 0, 0)
+            layoutParams = LinearLayout.LayoutParams(dpToPx(34), dpToPx(30))
+            setOnClickListener { if (uiScale > 0.6f) { uiScale -= 0.1f; saveUISettings(); applyUIScaleChange() } }
+        })
+        scaleLayout.addView(TextView(service).apply {
+            text = "${(uiScale * 100).toInt()}%"
+            setTextColor(Color.WHITE)
+            setTypeface(null, Typeface.BOLD)
+            setScaledTextSize(12.5f)
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(dpToPx(48), WindowManager.LayoutParams.WRAP_CONTENT)
+        })
+        scaleLayout.addView(Button(service).apply {
+            text = "+"
+            stylePillButton(this, "#283246", null, 8, 14f)
+            setPadding(0, 0, 0, 0)
+            layoutParams = LinearLayout.LayoutParams(dpToPx(34), dpToPx(30))
+            setOnClickListener { if (uiScale < 1.8f) { uiScale += 0.1f; saveUISettings(); applyUIScaleChange() } }
+        })
+        uiCard.addView(scaleLayout)
+
+        uiCard.addView(android.widget.CheckBox(service).apply {
+            text = "Кнопка «Скрыть метки» (👁) на панели"
+            setTextColor(Color.WHITE)
+            setScaledTextSize(12f)
             isChecked = showEyeBtn
             setOnCheckedChangeListener { _, c -> showEyeBtn = c; saveUISettings(); recreateFloatingControlBar() }
-        }
-        val pLines = android.widget.CheckBox(service).apply {
-            text = "Кнопка 'Линии связи' (🕸)"
+        })
+        uiCard.addView(android.widget.CheckBox(service).apply {
+            text = "Кнопка «Линии маршрутов» (🕸) на панели"
             setTextColor(Color.WHITE)
+            setScaledTextSize(12f)
             isChecked = showLinesBtn
             setOnCheckedChangeListener { _, c -> showLinesBtn = c; saveUISettings(); recreateFloatingControlBar() }
-        }
-        val pHotbar = android.widget.CheckBox(service).apply {
-            text = "Кнопка 'Быстрая панель' (⚡)"
+        })
+        uiCard.addView(android.widget.CheckBox(service).apply {
+            text = "Кнопка «Быстрые профили» (⚡) на панели"
             setTextColor(Color.WHITE)
+            setScaledTextSize(12f)
             isChecked = showHotbarBtn
             setOnCheckedChangeListener { _, c -> showHotbarBtn = c; saveUISettings(); recreateFloatingControlBar() }
-        }
-        layout.addView(pEye)
-        layout.addView(pLines)
-        layout.addView(pHotbar)
+        })
 
-        val debugBtn = Button(service).apply {
-            text = if (isDebugWindowVisible) "Дебаг Лог: ВКЛ" else "Дебаг Лог: ВЫКЛ"
-            setOnClickListener {
-                toggleDebugWindow()
-                saveUISettings()
-                showSettingsMenu()
-            }
-        }
-        layout.addView(debugBtn)
+        // Card 2: Ограничения работы и циклы
+        val execCard = createGroupCard("⏱ Таймер работы и циклы")
 
-        val caffeineBtn = Button(service).apply {
-            text = if (isCaffeineEnabled) "КОФЕИН (Не спать): ВКЛ" else "КОФЕИН (Не спать): ВЫКЛ"
-            setBackgroundColor(if (isCaffeineEnabled) Color.parseColor("#4CAF50") else Color.parseColor("#555555"))
+        val maxCyclesRow = LinearLayout(service).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        maxCyclesRow.addView(TextView(service).apply {
+            text = "Остановить после циклов (0 = ∞):"
             setTextColor(Color.WHITE)
-            setOnClickListener {
-                isCaffeineEnabled = !isCaffeineEnabled
-                saveUISettings()
-                updateFloatingControlBarCaffeine()
-                showSettingsMenu()
-            }
-        }
-        layout.addView(caffeineBtn)
-
-        layout.addView(TextView(service).apply { text = "Настройки выполнения (Глобальные)"; setTextColor(Color.WHITE); setScaledTextSize(16f); setPadding(0, 20, 0, 10) })
-
-        val maxCyclesLayout = LinearLayout(service).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 5, 0, 10) }
-        maxCyclesLayout.addView(TextView(service).apply { text = "Общее количество циклов (0 = ∞): "; setTextColor(Color.WHITE) })
+            setScaledTextSize(12f)
+            layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f)
+        })
         val maxCyclesEdit = EditText(service).apply {
             inputType = InputType.TYPE_CLASS_NUMBER
             setText(if (service.maxCycles != null && service.maxCycles!! > 0) service.maxCycles.toString() else "0")
             setTextColor(Color.WHITE)
-            layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT)
+            setScaledTextSize(12.5f)
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(dpToPx(70), WindowManager.LayoutParams.WRAP_CONTENT)
         }
-        maxCyclesLayout.addView(maxCyclesEdit)
-        layout.addView(maxCyclesLayout)
-        
-        val cycleDelayLayout = LinearLayout(service).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 5, 0, 10) }
-        cycleDelayLayout.addView(TextView(service).apply { text = "Задержка после цикла (мс): "; setTextColor(Color.WHITE) })
+        maxCyclesRow.addView(maxCyclesEdit)
+        execCard.addView(maxCyclesRow)
+
+        val cycleDelayRow = LinearLayout(service).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        cycleDelayRow.addView(TextView(service).apply {
+            text = "Пауза между кругами (мс):"
+            setTextColor(Color.WHITE)
+            setScaledTextSize(12f)
+            layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f)
+        })
         val cycleDelayEdit = EditText(service).apply {
             inputType = InputType.TYPE_CLASS_NUMBER
             setText(service.cycleEndDelayMs.toString())
             setTextColor(Color.WHITE)
-            layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT)
+            setScaledTextSize(12.5f)
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(dpToPx(70), WindowManager.LayoutParams.WRAP_CONTENT)
         }
-        cycleDelayLayout.addView(cycleDelayEdit)
-        layout.addView(cycleDelayLayout)
+        cycleDelayRow.addView(cycleDelayEdit)
+        execCard.addView(cycleDelayRow)
 
-        val maxTimeLayout = LinearLayout(service).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 5, 0, 10) }
-        maxTimeLayout.addView(TextView(service).apply { text = "Время работы (минуты, 0 = ∞): "; setTextColor(Color.WHITE) })
+        val maxTimeRow = LinearLayout(service).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        maxTimeRow.addView(TextView(service).apply {
+            text = "Таймер авто-стопа (мин, 0 = ∞):"
+            setTextColor(Color.WHITE)
+            setScaledTextSize(12f)
+            layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f)
+        })
         val maxTimeEdit = EditText(service).apply {
             inputType = InputType.TYPE_CLASS_NUMBER
             setText(if (service.maxPlayDurationMs != null && service.maxPlayDurationMs!! > 0) (service.maxPlayDurationMs!! / 60000L).toString() else "0")
             setTextColor(Color.WHITE)
-            layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT)
+            setScaledTextSize(12.5f)
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(dpToPx(70), WindowManager.LayoutParams.WRAP_CONTENT)
         }
-        maxTimeLayout.addView(maxTimeEdit)
-        layout.addView(maxTimeLayout)
+        maxTimeRow.addView(maxTimeEdit)
+        execCard.addView(maxTimeRow)
 
-        val multitouchLayout = LinearLayout(service).apply { 
-            orientation = LinearLayout.HORIZONTAL 
-            setPadding(0, 10, 0, 10)
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        val multitouchCheck = android.widget.CheckBox(service).apply {
-            text = "Синхронный Мультитач (может сбоить камеру)"
+        // Card 3: Системные функции
+        val sysCard = createGroupCard("⚡ Система и отладка")
+
+        sysCard.addView(android.widget.CheckBox(service).apply {
+            text = "☕ Кофеин (Не гасить экран во время работы)"
             setTextColor(Color.WHITE)
+            setScaledTextSize(12f)
+            isChecked = isCaffeineEnabled
+            setOnCheckedChangeListener { _, c ->
+                isCaffeineEnabled = c
+                saveUISettings()
+                updateFloatingControlBarCaffeine()
+            }
+        })
+        sysCard.addView(android.widget.CheckBox(service).apply {
+            text = "🐞 Показать окно Дебаг-лога на экране"
+            setTextColor(Color.WHITE)
+            setScaledTextSize(12f)
+            isChecked = isDebugWindowVisible
+            setOnCheckedChangeListener { _, _ ->
+                toggleDebugWindow()
+                saveUISettings()
+            }
+        })
+        sysCard.addView(android.widget.CheckBox(service).apply {
+            text = "🖐 Синхронный мультитач (несколько пальцев)"
+            setTextColor(Color.WHITE)
+            setScaledTextSize(12f)
             isChecked = service.enableMultitouch
             setOnCheckedChangeListener { _, isChecked ->
                 service.enableMultitouch = isChecked
                 saveUISettings()
-                if (isChecked) {
-                    android.widget.Toast.makeText(service, "Внимание! Во многих играх мультитач вызывает сбой масштабирования камеры.", android.widget.Toast.LENGTH_LONG).show()
-                }
             }
-        }
-        multitouchLayout.addView(multitouchCheck)
-        layout.addView(multitouchLayout)
-
-        val extremeSpeedLayout = LinearLayout(service).apply { 
-            orientation = LinearLayout.HORIZONTAL 
-            setPadding(0, 10, 0, 10)
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        val extremeSpeedCheck = android.widget.CheckBox(service).apply {
-            text = "Снять ограничения минимальной задержки (до ~600 КПС при 0 мс)"
-            setTextColor(Color.RED)
+        })
+        sysCard.addView(android.widget.CheckBox(service).apply {
+            text = "🚀 Экстремальная скорость (до 600 кликов/сек)"
+            setTextColor(Color.parseColor("#FF8A80"))
+            setScaledTextSize(12f)
             isChecked = service.allowExtremeSpeed
             setOnCheckedChangeListener { _, isChecked ->
                 service.allowExtremeSpeed = isChecked
                 saveUISettings()
             }
-        }
-        extremeSpeedLayout.addView(extremeSpeedCheck)
-        layout.addView(extremeSpeedLayout)
+        })
 
-        
         val saveBtn = Button(service).apply {
-            text = "Сохранить и Выйти"
-            setBackgroundColor(Color.parseColor("#4CAF50"))
-            setTextColor(Color.WHITE)
+            text = "✔ Применить настройки"
+            stylePillButton(this, "#00C853", null, 10, 13.5f)
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dpToPx(40)).apply {
+                setMargins(0, dpToPx(4), 0, 0)
+            }
             setOnClickListener {
                 val cyclesStr = maxCyclesEdit.text.toString().toIntOrNull() ?: 0
                 service.maxCycles = if (cyclesStr > 0) cyclesStr else null
@@ -1948,12 +2244,10 @@ class UIManager(private val service: AutoClickService) {
                 val minsStr = maxTimeEdit.text.toString().toLongOrNull() ?: 0L
                 service.maxPlayDurationMs = if (minsStr > 0) minsStr * 60000L else null
                 saveUISettings()
+                Toast.makeText(service, "Настройки сохранены", Toast.LENGTH_SHORT).show()
                 showMainMenu()
             }
         }
-        val margins = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT)
-        margins.setMargins(0, 20, 0, 0)
-        saveBtn.layoutParams = margins
         layout.addView(saveBtn)
 
         scroll.addView(layout)
@@ -1963,219 +2257,288 @@ class UIManager(private val service: AutoClickService) {
     fun applyUISettings() {
         floatingControlBar?.alpha = uiAlpha
         modMenu?.alpha = uiAlpha
-        // We removed scaleX and scaleY because it breaks tap targets.
-        // Instead, the user needs to restart the menu (we'll implement this).
     }
 
     private fun showProfileMenu(isSaving: Boolean) {
+        updateTabSelection(1)
         setMenuFocusable(true)
         menuContentContainer.removeAllViews()
-        val layout = LinearLayout(service).apply { 
-            orientation = LinearLayout.VERTICAL
-            setPadding(10, 10, 10, 10)
+        val scrollRoot = ScrollView(service).apply {
+            layoutParams = if (isMenuFullscreen) {
+                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
+            } else {
+                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dpToPx(290))
+            }
             tag = if (isSaving) "profile_menu_save" else "profile_menu_load"
         }
-        
-        layout.addView(TextView(service).apply {
-            text = if (isSaving) "Сохранить профиль" else "Загрузить профиль"
-            setScaledTextSize(18f)
-            setTextColor(Color.WHITE)
-            setPadding(0, 0, 0, 20)
-        })
+        val layout = LinearLayout(service).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dpToPx(4), dpToPx(4), dpToPx(4), dpToPx(8))
+        }
 
+        // Save current scenario card
+        val saveCard = LinearLayout(service).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dpToPx(10), dpToPx(8), dpToPx(10), dpToPx(10))
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.parseColor("#181C26"))
+                cornerRadius = dpToPx(12).toFloat()
+                setStroke(dpToPx(1), Color.parseColor("#263238"))
+            }
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(0, 0, 0, dpToPx(10))
+            }
+        }
+        saveCard.addView(TextView(service).apply {
+            text = "💾 Сохранить текущий сценарий (${service.nodes.size} шаг.)"
+            setTextColor(Color.WHITE)
+            setTypeface(null, Typeface.BOLD)
+            setScaledTextSize(13f)
+        })
+        val saveInputRow = LinearLayout(service).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dpToPx(4), 0, 0)
+        }
         val nameEdit = EditText(service).apply {
-            hint = "Имя профиля (Сценарий 1)"
-            setHintTextColor(Color.parseColor("#AAAAAA"))
+            hint = "Название (напр. Фарм босса)"
+            setHintTextColor(Color.parseColor("#78909C"))
             setTextColor(Color.WHITE)
-        }
-        layout.addView(nameEdit)
-
-        val actionBtn = Button(service).apply {
-            text = if (isSaving) "СОХРАНИТЬ" else "ЗАГРУЗИТЬ"
-            setBackgroundColor(if (isSaving) Color.parseColor("#4CAF50") else Color.parseColor("#2196F3"))
-            setTextColor(Color.WHITE)
-            setOnClickListener {
-                val name = nameEdit.text.toString().takeIf { it.isNotBlank() } ?: "Сценарий 1"
-                if (isSaving) {
-                    service.saveProfile(name)
-                } else {
-                    service.loadProfile(name)
-                }
-                showMainMenu()
+            setScaledTextSize(12.5f)
+            layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f).apply {
+                setMargins(0, 0, dpToPx(6), 0)
             }
         }
-        layout.addView(actionBtn)
+        val saveNowBtn = Button(service).apply {
+            text = "Сохранить"
+            stylePillButton(this, "#00C853", null, 8, 12f)
+            setPadding(dpToPx(12), 0, dpToPx(12), 0)
+            layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.WRAP_CONTENT, dpToPx(36))
+            setOnClickListener {
+                val name = nameEdit.text.toString().trim().takeIf { it.isNotEmpty() } ?: "Сценарий ${service.getSavedProfiles().size + 1}"
+                service.saveProfile(name)
+                showProfileMenu(false)
+            }
+        }
+        saveInputRow.addView(nameEdit)
+        saveInputRow.addView(saveNowBtn)
+        saveCard.addView(saveInputRow)
+        layout.addView(saveCard)
 
+        // Saved profiles list
         val profiles = service.getSavedProfiles()
-        if (profiles.isNotEmpty()) {
-            layout.addView(TextView(service).apply {
-                text = "Сохраненные профили:"
-                setTextColor(Color.parseColor("#E0E0E0"))
-                setPadding(0, 20, 0, 10)
-            })
-            val scroll = ScrollView(service).apply {
-                layoutParams = if (isMenuFullscreen) {
-                    LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
-                } else {
-                    LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dpToPx(150))
-                }
-            }
-            val profilesLayout = LinearLayout(service).apply {
-                orientation = LinearLayout.VERTICAL
-            }
-            profiles.forEach { profileName ->
-                val row = LinearLayout(service).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-                }
-
-                val profileBtn = Button(service).apply {
-                    text = profileName
-                    setBackgroundColor(Color.parseColor("#444444"))
-                    setTextColor(Color.WHITE)
-                    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-                    setOnClickListener {
-                        nameEdit.setText(profileName)
-                        if (!isSaving) {
-                            service.loadProfile(profileName)
-                            showMainMenu()
-                        }
-                    }
-                }
-                row.addView(profileBtn)
-
-                if (!isSaving) {
-                    val appendBtn = Button(service).apply {
-                        text = "+ ВСТАВИТЬ"
-                        setBackgroundColor(Color.parseColor("#2E7D32"))
-                        setTextColor(Color.WHITE)
-                        layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-                        setOnClickListener {
-                            service.loadProfile(profileName, append = true)
-                            showMainMenu()
-                        }
-                    }
-                    row.addView(appendBtn)
-                }
-
-                val deleteBtn = Button(service).apply {
-                    text = "X"
-                    setBackgroundColor(Color.parseColor("#D32F2F"))
-                    setTextColor(Color.WHITE)
-                    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-                    setOnClickListener {
-                        service.deleteProfile(profileName)
-                        showProfileMenu(isSaving) // refresh the menu
-                    }
-                }
-                row.addView(deleteBtn)
-
-                profilesLayout.addView(row)
-            }
-            scroll.addView(profilesLayout)
-            layout.addView(scroll)
-        }
-
-        val clipboardBtn = Button(service).apply {
-            text = if (isSaving) "ЭКСПОРТ В БУФЕР ОБМЕНА" else "ИМПОРТ ИЗ БУФЕРА ОБМЕНА"
-            setBackgroundColor(Color.parseColor("#555555"))
-            setTextColor(Color.WHITE)
-            setOnClickListener {
-                if (isSaving) {
-                    service.exportProfileToClipboard()
-                } else {
-                    service.importProfileFromClipboard()
-                }
-                showMainMenu()
-            }
-        }
-        layout.addView(clipboardBtn)
-
-        val fileBtn = Button(service).apply {
-            text = if (isSaving) "ЭКСПОРТ В ФАЙЛ" else "ИМПОРТ ИЗ ФАЙЛА"
-            setBackgroundColor(Color.parseColor("#555555"))
-            setTextColor(Color.WHITE)
-            setOnClickListener {
-                if (isSaving) {
-                    val name = nameEdit.text.toString().takeIf { it.isNotBlank() } ?: "Сценарий 1"
-                    val prefs = service.getSharedPreferences("AutoClickerProfiles", android.content.Context.MODE_PRIVATE)
-                    var jsonToExport = prefs.getString(name, null)
-                    
-                    if (jsonToExport == null) {
-                        val obj = org.json.JSONObject()
-                        val metrics = service.resources.displayMetrics
-                        obj.put("screenWidth", metrics.widthPixels)
-                        obj.put("screenHeight", metrics.heightPixels)
-                        val arr = org.json.JSONArray()
-                        for (node in service.nodes) arr.put(node.toJson())
-                        obj.put("nodes", arr)
-                        jsonToExport = obj.toString()
-                    }
-                    
-                    MainActivity.pendingExportData = jsonToExport
-                    
-                    val intent = android.content.Intent(service, MainActivity::class.java).apply {
-                        action = "ACTION_EXPORT_PROFILE"
-                        putExtra("profile_name", name)
-                        addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                    service.startActivity(intent)
-                } else {
-                    val intent = android.content.Intent(service, MainActivity::class.java).apply {
-                        action = "ACTION_IMPORT_PROFILE"
-                        addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                    service.startActivity(intent)
-                }
-                showMainMenu()
-                showModMenu()
-            }
-        }
-        layout.addView(fileBtn)
-
-        if (isSaving) {
-            val shareBtn = Button(service).apply {
-                text = "ПОДЕЛИТЬСЯ (TELEGRAM И ДР.)"
-                setBackgroundColor(Color.parseColor("#446688"))
-                setTextColor(Color.WHITE)
-                setOnClickListener {
-                    val name = nameEdit.text.toString().takeIf { it.isNotBlank() } ?: "Сценарий 1"
-                    val prefs = service.getSharedPreferences("AutoClickerProfiles", android.content.Context.MODE_PRIVATE)
-                    var jsonToExport = prefs.getString(name, null)
-                    
-                    if (jsonToExport == null) {
-                        val obj = org.json.JSONObject()
-                        val metrics = service.resources.displayMetrics
-                        obj.put("screenWidth", metrics.widthPixels)
-                        obj.put("screenHeight", metrics.heightPixels)
-                        val arr = org.json.JSONArray()
-                        for (node in service.nodes) arr.put(node.toJson())
-                        obj.put("nodes", arr)
-                        jsonToExport = obj.toString()
-                    }
-                    
-                    MainActivity.pendingExportData = jsonToExport
-                    
-                    val intent = android.content.Intent(service, MainActivity::class.java).apply {
-                        action = "ACTION_SHARE_PROFILE"
-                        putExtra("profile_name", name)
-                        addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                    service.startActivity(intent)
-                    
-                    showMainMenu()
-                    showModMenu()
-                }
-            }
-            layout.addView(shareBtn)
-        }
-
-        layout.addView(Button(service).apply {
-            text = "ОТМЕНА"
-            setOnClickListener { showMainMenu() }
+        layout.addView(TextView(service).apply {
+            text = if (profiles.isEmpty()) "Сохранённых профилей пока нет" else "📂 Ваши сохранённые профили (${profiles.size}):"
+            setTextColor(Color.parseColor("#90A4AE"))
+            setTypeface(null, Typeface.BOLD)
+            setScaledTextSize(12f)
+            setPadding(dpToPx(2), 0, 0, dpToPx(6))
         })
 
-        menuContentContainer.addView(layout)
+        profiles.forEach { profileName ->
+            val pCard = LinearLayout(service).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dpToPx(10), dpToPx(6), dpToPx(6), dpToPx(6))
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    setColor(Color.parseColor("#1B212E"))
+                    cornerRadius = dpToPx(10).toFloat()
+                    setStroke(dpToPx(1), Color.parseColor("#2E3B4E"))
+                }
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                    setMargins(0, 0, 0, dpToPx(6))
+                }
+            }
+            val titleTv = TextView(service).apply {
+                text = profileName
+                setTextColor(Color.WHITE)
+                setTypeface(null, Typeface.BOLD)
+                setScaledTextSize(12.5f)
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                setOnClickListener {
+                    nameEdit.setText(profileName)
+                }
+            }
+            val loadBtn = Button(service).apply {
+                text = "Загр."
+                stylePillButton(this, "#1E88E5", null, 8, 11.5f)
+                setPadding(dpToPx(8), 0, dpToPx(8), 0)
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dpToPx(32)).apply {
+                    setMargins(0, 0, dpToPx(4), 0)
+                }
+                setOnClickListener {
+                    service.loadProfile(profileName, append = false)
+                    recreateFloatingControlBar()
+                    showMainMenu()
+                }
+            }
+            val appendBtn = Button(service).apply {
+                text = "+К текущ."
+                stylePillButton(this, "#283246", null, 8, 11f)
+                setPadding(dpToPx(6), 0, dpToPx(6), 0)
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dpToPx(32)).apply {
+                    setMargins(0, 0, dpToPx(4), 0)
+                }
+                setOnClickListener {
+                    service.loadProfile(profileName, append = true)
+                    recreateFloatingControlBar()
+                    showMainMenu()
+                }
+            }
+            val deleteBtn = Button(service).apply {
+                text = "✕"
+                stylePillButton(this, "#3B1E22", null, 8, 11.5f)
+                setTextColor(Color.parseColor("#FF8A80"))
+                setPadding(0, 0, 0, 0)
+                layoutParams = LinearLayout.LayoutParams(dpToPx(32), dpToPx(32))
+                setOnClickListener {
+                    service.deleteProfile(profileName)
+                    showProfileMenu(false)
+                }
+            }
+            pCard.addView(titleTv)
+            pCard.addView(loadBtn)
+            pCard.addView(appendBtn)
+            pCard.addView(deleteBtn)
+            layout.addView(pCard)
+        }
+
+        // Export / Import & Backup section
+        val ioCard = LinearLayout(service).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dpToPx(10), dpToPx(8), dpToPx(10), dpToPx(10))
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.parseColor("#181C26"))
+                cornerRadius = dpToPx(12).toFloat()
+                setStroke(dpToPx(1), Color.parseColor("#263238"))
+            }
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(0, dpToPx(6), 0, 0)
+            }
+        }
+        ioCard.addView(TextView(service).apply {
+            text = "🔄 Обмен файлами и резервная копия"
+            setTextColor(Color.parseColor("#64B5F6"))
+            setTypeface(null, Typeface.BOLD)
+            setScaledTextSize(12.5f)
+            setPadding(0, 0, 0, dpToPx(6))
+        })
+
+        val clipRow = LinearLayout(service).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(0, 0, 0, dpToPx(6))
+            }
+        }
+        clipRow.addView(Button(service).apply {
+            text = "📋 Копировать"
+            stylePillButton(this, "#263238", null, 8, 11.5f)
+            layoutParams = LinearLayout.LayoutParams(0, dpToPx(34), 1f).apply { setMargins(0, 0, dpToPx(4), 0) }
+            setOnClickListener { service.exportProfileToClipboard() }
+        })
+        clipRow.addView(Button(service).apply {
+            text = "📥 Вставить"
+            stylePillButton(this, "#263238", null, 8, 11.5f)
+            layoutParams = LinearLayout.LayoutParams(0, dpToPx(34), 1f).apply { setMargins(dpToPx(4), 0, 0, 0) }
+            setOnClickListener {
+                service.importProfileFromClipboard()
+                recreateFloatingControlBar()
+                showMainMenu()
+            }
+        })
+        ioCard.addView(clipRow)
+
+        val fileRow = LinearLayout(service).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(0, 0, 0, dpToPx(6))
+            }
+        }
+        fileRow.addView(Button(service).apply {
+            text = "📤 В файл .json"
+            stylePillButton(this, "#263238", null, 8, 11.5f)
+            layoutParams = LinearLayout.LayoutParams(0, dpToPx(34), 1f).apply { setMargins(0, 0, dpToPx(4), 0) }
+            setOnClickListener {
+                val name = nameEdit.text.toString().takeIf { it.isNotBlank() } ?: "AutoClickerProfile"
+                val obj = org.json.JSONObject()
+                val metrics = service.resources.displayMetrics
+                obj.put("screenWidth", metrics.widthPixels)
+                obj.put("screenHeight", metrics.heightPixels)
+                val arr = org.json.JSONArray()
+                for (node in service.nodes) arr.put(node.toJson())
+                obj.put("nodes", arr)
+                MainActivity.pendingExportData = obj.toString()
+                val intent = android.content.Intent(service, MainActivity::class.java).apply {
+                    action = "ACTION_EXPORT_PROFILE"
+                    putExtra("profile_name", name)
+                    addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                service.startActivity(intent)
+                modMenu?.visibility = View.GONE
+            }
+        })
+        fileRow.addView(Button(service).apply {
+            text = "📂 Загрузить файл"
+            stylePillButton(this, "#263238", null, 8, 11.5f)
+            layoutParams = LinearLayout.LayoutParams(0, dpToPx(34), 1f).apply { setMargins(dpToPx(4), 0, 0, 0) }
+            setOnClickListener {
+                val intent = android.content.Intent(service, MainActivity::class.java).apply {
+                    action = "ACTION_IMPORT_PROFILE"
+                    addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                service.startActivity(intent)
+                modMenu?.visibility = View.GONE
+            }
+        })
+        ioCard.addView(fileRow)
+
+        val shareAndBackupRow = LinearLayout(service).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+        shareAndBackupRow.addView(Button(service).apply {
+            text = "✈ Поделиться"
+            stylePillButton(this, "#1E88E5", null, 8, 11.5f)
+            layoutParams = LinearLayout.LayoutParams(0, dpToPx(34), 1f).apply { setMargins(0, 0, dpToPx(4), 0) }
+            setOnClickListener {
+                val name = nameEdit.text.toString().takeIf { it.isNotBlank() } ?: "AutoClickerProfile"
+                val obj = org.json.JSONObject()
+                val metrics = service.resources.displayMetrics
+                obj.put("screenWidth", metrics.widthPixels)
+                obj.put("screenHeight", metrics.heightPixels)
+                val arr = org.json.JSONArray()
+                for (node in service.nodes) arr.put(node.toJson())
+                obj.put("nodes", arr)
+                MainActivity.pendingExportData = obj.toString()
+                val intent = android.content.Intent(service, MainActivity::class.java).apply {
+                    action = "ACTION_SHARE_PROFILE"
+                    putExtra("profile_name", name)
+                    addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                service.startActivity(intent)
+                modMenu?.visibility = View.GONE
+            }
+        })
+        shareAndBackupRow.addView(Button(service).apply {
+            text = "📦 Бэкап всех"
+            stylePillButton(this, "#6A1B9A", null, 8, 11.5f)
+            layoutParams = LinearLayout.LayoutParams(0, dpToPx(34), 1f).apply { setMargins(dpToPx(4), 0, 0, 0) }
+            setOnClickListener {
+                MainActivity.pendingExportData = service.exportAllProfilesJson()
+                val intent = android.content.Intent(service, MainActivity::class.java).apply {
+                    action = "ACTION_EXPORT_PROFILE"
+                    putExtra("profile_name", "UpwellClick_AllProfiles_Backup")
+                    addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                service.startActivity(intent)
+                modMenu?.visibility = View.GONE
+            }
+        })
+        ioCard.addView(shareAndBackupRow)
+        layout.addView(ioCard)
+
+        scrollRoot.addView(layout)
+        menuContentContainer.addView(scrollRoot)
     }
 
     private fun createColorRow(title: String, onColorSelected: (Int) -> Unit): View {
@@ -2360,70 +2723,109 @@ class UIManager(private val service: AutoClickService) {
         menuContentContainer.removeAllViews()
         val layout = ScrollView(service).apply {
             tag = "edit_menu"
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.MATCH_PARENT)
+            layoutParams = if (isMenuFullscreen) {
+                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
+            } else {
+                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dpToPx(310))
+            }
         }
-        val content = LinearLayout(service).apply { orientation = LinearLayout.VERTICAL }
-
-        val headerLayout = LinearLayout(service).apply { 
+        val content = LinearLayout(service).apply {
             orientation = LinearLayout.VERTICAL
-            gravity = Gravity.START
-            setPadding(0, 0, 0, 20)
+            setPadding(dpToPx(2), dpToPx(2), dpToPx(2), dpToPx(8))
         }
-        val headerTitleLayout = LinearLayout(service).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        
-        val btnLeft = Button(service).apply { 
-            text = "⬅"
+
+        val headerCard = LinearLayout(service).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dpToPx(10), dpToPx(8), dpToPx(10), dpToPx(8))
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.parseColor("#181C26"))
+                cornerRadius = dpToPx(12).toFloat()
+                setStroke(dpToPx(1), Color.parseColor("#2E3B4E"))
+            }
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(0, 0, 0, dpToPx(6))
+            }
+        }
+
+        val headerTitleLayout = LinearLayout(service).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+
+        val backQuickBtn = Button(service).apply {
+            text = "⬅ Список"
+            stylePillButton(this, "#283246", null, 8, 11.5f)
+            setPadding(dpToPx(8), 0, dpToPx(8), 0)
+            layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.WRAP_CONTENT, dpToPx(30))
+            setOnClickListener {
+                service.autoSave()
+                showMainMenu()
+            }
+        }
+
+        val tvNodeTitle = TextView(service).apply {
+            text = "Шаг #${node.id}"
             setTextColor(Color.WHITE)
-            setBackgroundColor(Color.TRANSPARENT)
-            setPadding(10, 0, 10, 0)
-            layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT)
+            setTypeface(null, Typeface.BOLD)
+            setScaledTextSize(15f)
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f)
+        }
+
+        val btnLeft = Button(service).apply {
+            text = "▲"
+            stylePillButton(this, "#23293A", null, 8, 11f)
+            setPadding(0, 0, 0, 0)
+            layoutParams = LinearLayout.LayoutParams(dpToPx(30), dpToPx(30)).apply { setMargins(0, 0, dpToPx(3), 0) }
             isEnabled = node.id > 1
+            alpha = if (isEnabled) 1f else 0.35f
             setOnClickListener {
                 swapNodes(node.id, node.id - 1)
                 showEditNodeMenu(node)
             }
         }
-        
-        val tvNodeTitle = TextView(service).apply {
-            text = " Метка [${node.id}] "
-            setTextColor(Color.WHITE)
-            setScaledTextSize(16f)
-            gravity = Gravity.CENTER
-        }
-        
-        val btnRight = Button(service).apply { 
-            text = "➡"
-            setTextColor(Color.WHITE)
-            setBackgroundColor(Color.TRANSPARENT)
-            setPadding(10, 0, 10, 0)
-            layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT)
+
+        val btnRight = Button(service).apply {
+            text = "▼"
+            stylePillButton(this, "#23293A", null, 8, 11f)
+            setPadding(0, 0, 0, 0)
+            layoutParams = LinearLayout.LayoutParams(dpToPx(30), dpToPx(30))
             val maxId = service.nodes.maxOfOrNull { it.id } ?: 1
             isEnabled = node.id < maxId
+            alpha = if (isEnabled) 1f else 0.35f
             setOnClickListener {
                 swapNodes(node.id, node.id + 1)
                 showEditNodeMenu(node)
             }
         }
-        
-        headerTitleLayout.addView(btnLeft)
+
+        headerTitleLayout.addView(backQuickBtn)
         headerTitleLayout.addView(tvNodeTitle)
+        headerTitleLayout.addView(btnLeft)
         headerTitleLayout.addView(btnRight)
-        
-        headerLayout.addView(headerTitleLayout)
+        headerCard.addView(headerTitleLayout)
+
         val typeSpinner = android.widget.Spinner(service).apply {
-            val items = arrayOf("🎯 Действие (Клик/Свайп)", "👁 Условие (Поиск)", "⚡ Вызов скрипта", "🔀 Менеджер (Логика)")
-            val adapter = android.widget.ArrayAdapter(service, android.R.layout.simple_spinner_dropdown_item, items)
-            this.adapter = adapter
-            setSelection(when(node.type) {
+            val items = arrayOf(
+                "🎯 Действие (Клик / Свайп / Удержание)",
+                "👁 Только условие (Ждать цвет / картинку / текст)",
+                "⚡ Вызов подпрограммы (Другой профиль)",
+                "🔀 Менеджер условий (Развилка)"
+            )
+            this.adapter = createThemedSpinnerAdapter(items)
+            setSelection(when (node.type) {
                 NodeType.CLICK -> 0
                 NodeType.CHECK_COLOR -> 1
                 NodeType.MACRO -> 2
                 NodeType.MANAGER -> 3
             })
             visibility = if (appMode == AppMode.ADVANCED) View.VISIBLE else View.GONE
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(0, dpToPx(6), 0, 0)
+            }
             onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
                 override fun onItemSelected(p0: android.widget.AdapterView<*>?, p1: View?, pos: Int, id: Long) {
-                    val newType = when(pos) {
+                    val newType = when (pos) {
                         0 -> NodeType.CLICK
                         1 -> NodeType.CHECK_COLOR
                         2 -> NodeType.MACRO
@@ -2432,99 +2834,75 @@ class UIManager(private val service: AutoClickService) {
                     }
                     if (node.type != newType) {
                         node.type = newType
+                        if (newType == NodeType.CHECK_COLOR && node.triggerMode == -1) {
+                            node.triggerMode = 0
+                        }
                         node.crosshairColor = if (node.type == NodeType.CLICK) Color.RED else if (node.type == NodeType.MANAGER) Color.parseColor("#9C27B0") else Color.BLUE
                         nodeViews[node.id]?.invalidate()
                         showEditNodeMenu(node)
-                        nodeViews[node.id]?.invalidate()
                     }
                 }
                 override fun onNothingSelected(p0: android.widget.AdapterView<*>?) {}
             }
         }
-        headerLayout.addView(typeSpinner)
-        
-        if (appMode == AppMode.ADVANCED) {
-            if (node.type == NodeType.CHECK_COLOR || node.type == NodeType.MACRO || node.type == NodeType.MANAGER) {
-                val skipSwitch = android.widget.Switch(service).apply {
-                    text = "Функция (Пропуск в очереди)"
-                    setTextColor(Color.CYAN)
-                    isChecked = node.skipSequentialExecution
-                    setOnCheckedChangeListener { _, isChecked ->
-                        node.skipSequentialExecution = isChecked
-                    }
-                    setPadding(20, 0, 0, 0)
-                }
-                headerLayout.addView(skipSwitch)
-            }
-            
-            val threadSwitch = android.widget.Switch(service).apply {
-                text = "Отдельный поток (Параллельно)"
-                setTextColor(Color.parseColor("#FFA500")) // Orange
-                isChecked = node.isIndependentThread
-                setOnCheckedChangeListener { _, isChecked ->
-                    node.isIndependentThread = isChecked
-                }
-                setPadding(20, 0, 0, 0)
-            }
-            headerLayout.addView(threadSwitch)
-        }
-        content.addView(headerLayout)
+        headerCard.addView(typeSpinner)
+        content.addView(headerCard)
 
-        fun addSection(title: String, hasChanges: Boolean, buildContent: (LinearLayout) -> Unit): LinearLayout {
+        fun addSection(title: String, hasChanges: Boolean, startExpanded: Boolean = false, buildContent: (LinearLayout) -> Unit): LinearLayout {
             val sectionLayout = LinearLayout(service).apply {
                 orientation = LinearLayout.VERTICAL
                 val marginParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-                marginParams.setMargins(0, dpToPx(5), 0, dpToPx(5))
+                marginParams.setMargins(0, dpToPx(4), 0, dpToPx(4))
                 layoutParams = marginParams
-                
+
                 background = android.graphics.drawable.GradientDrawable().apply {
-                    setColor(Color.parseColor("#252525"))
+                    setColor(Color.parseColor("#181C26"))
                     cornerRadius = dpToPx(12).toFloat()
-                    setStroke(dpToPx(1), Color.parseColor("#333333"))
+                    setStroke(dpToPx(1), Color.parseColor(if (hasChanges) "#2E4C6D" else "#263238"))
                 }
                 clipToOutline = true
             }
-            
-            val headerLayout = LinearLayout(service).apply {
+
+            val secHeader = LinearLayout(service).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                setPadding(dpToPx(15), dpToPx(15), dpToPx(15), dpToPx(15))
+                setPadding(dpToPx(12), dpToPx(11), dpToPx(12), dpToPx(11))
             }
-            
+
             val titleText = TextView(service).apply {
                 text = title
-                setTextColor(Color.parseColor("#EEEEEE"))
-                setScaledTextSize(14f)
+                setTextColor(Color.WHITE)
+                setScaledTextSize(13f)
                 setTypeface(null, android.graphics.Typeface.BOLD)
                 layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f)
             }
-            
+
             val checkIcon = TextView(service).apply {
                 text = " ● "
-                setTextColor(Color.parseColor("#4CAF50"))
-                setScaledTextSize(12f)
+                setTextColor(Color.parseColor("#00E676"))
+                setScaledTextSize(11f)
                 visibility = if (hasChanges) View.VISIBLE else View.GONE
             }
-            
+
             val icon = TextView(service).apply {
-                text = "﹀"
-                setTextColor(Color.parseColor("#888888"))
-                setScaledTextSize(16f)
+                text = if (startExpanded) "︿" else "﹀"
+                setTextColor(Color.parseColor("#90A4AE"))
+                setScaledTextSize(14f)
             }
-            
-            headerLayout.addView(titleText)
-            headerLayout.addView(checkIcon)
-            headerLayout.addView(icon)
-            
+
+            secHeader.addView(titleText)
+            secHeader.addView(checkIcon)
+            secHeader.addView(icon)
+
             val bodyLayout = LinearLayout(service).apply {
                 orientation = LinearLayout.VERTICAL
-                setPadding(dpToPx(15), 0, dpToPx(15), dpToPx(15))
-                visibility = View.GONE
+                setPadding(dpToPx(12), 0, dpToPx(12), dpToPx(12))
+                visibility = if (startExpanded) View.VISIBLE else View.GONE
             }
-            
+
             buildContent(bodyLayout)
-            
-            headerLayout.setOnClickListener {
+
+            secHeader.setOnClickListener {
                 if (bodyLayout.visibility == View.VISIBLE) {
                     bodyLayout.visibility = View.GONE
                     icon.text = "﹀"
@@ -2533,76 +2911,43 @@ class UIManager(private val service: AutoClickService) {
                     icon.text = "︿"
                 }
             }
-            
-            sectionLayout.addView(headerLayout)
+
+            sectionLayout.addView(secHeader)
             sectionLayout.addView(bodyLayout)
             content.addView(sectionLayout)
             return sectionLayout
         }
 
-        // --- SECTION: Внешний вид ---
-        val toggleVisBtn = Button(service).apply {
-            text = if (node.isVisible) "Скрыть маркер" else "Показать маркер"
-            setOnClickListener {
-                node.isVisible = !node.isVisible
-                text = if (node.isVisible) "Скрыть маркер" else "Показать маркер"
-                nodeViews[node.id]?.visibility = if (node.isVisible) View.VISIBLE else View.GONE
-                swipeEndViews[node.id]?.visibility = if (node.isVisible) View.VISIBLE else View.GONE
-                invalidateLines()
-            }
-        }
-
-        val sizeLayout = LinearLayout(service).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 10, 0, 10); gravity = Gravity.CENTER_VERTICAL }
-        sizeLayout.addView(TextView(service).apply { text = "Размер: "; setTextColor(Color.WHITE) })
-        sizeLayout.addView(Button(service).apply { 
-            text = " - "
-            setOnClickListener { 
-                node.sizeScale = Math.max(0.5f, node.sizeScale - 0.2f)
-                nodeViews[node.id]?.invalidate()
-            } 
-        })
-        sizeLayout.addView(Button(service).apply { 
-            text = " + "
-            setOnClickListener { 
-                node.sizeScale = Math.min(3.0f, node.sizeScale + 0.2f)
-                nodeViews[node.id]?.invalidate()
-            } 
-        })
-
-        val defCrosshair = if (node.type == NodeType.CLICK) Color.RED else Color.BLUE
-        val defNumber = if (node.type == NodeType.CLICK) Color.WHITE else Color.YELLOW
-        val hasViewChanges = !node.isVisible || node.sizeScale != 1.0f || node.crosshairColor != defCrosshair || node.numberColor != defNumber
-        
-        addSection("🎨 Внешний вид (Цвет / Размер)", hasViewChanges) { body ->
-            body.addView(toggleVisBtn)
-            body.addView(sizeLayout)
-            body.addView(createColorRow("Цвет метки") { color ->
-                node.crosshairColor = color
-                nodeViews[node.id]?.invalidate()
-            })
-            body.addView(createColorRow("Цвет цифры") { color ->
-                node.numberColor = color
-                nodeViews[node.id]?.invalidate()
-            })
-        }
-
-        // --- SECTION: Тайминги ---
+        // --- SECTION: Тайминги (Открыта сразу для обычных кликов) ---
         val (clickDurRow, getClickDurRowMs) = createTimeInputRow("Длительность нажатия:", node.clickDurationMs)
-        val (delayRow, getDelayRowMs) = createTimeInputRow("Пауза перед след шагом:", node.delayAfterMs)
-        
-        val tvRepetitions = TextView(service).apply { text="Количество повторений:"; setTextColor(Color.WHITE) }
+        val (delayRow, getDelayRowMs) = createTimeInputRow("Пауза после шага:", node.delayAfterMs)
+
+        val repRow = LinearLayout(service).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dpToPx(4), 0, dpToPx(4))
+        }
+        repRow.addView(TextView(service).apply {
+            text = "Повторить подряд (раз):"
+            setTextColor(Color.WHITE)
+            setScaledTextSize(12.5f)
+            layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f)
+        })
         val repetitionsEdit = EditText(service).apply {
             inputType = InputType.TYPE_CLASS_NUMBER
             setText(node.repetitions.toString())
             setTextColor(Color.WHITE)
+            setScaledTextSize(12.5f)
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(dpToPx(64), WindowManager.LayoutParams.WRAP_CONTENT)
         }
+        repRow.addView(repetitionsEdit)
 
         val applyTimingsBtn = Button(service).apply {
-            text = "ПРИМЕНИТЬ КО ВСЕМ МЕТКАМ"
-            setBackgroundColor(Color.parseColor("#885555"))
-            setTextColor(Color.WHITE)
-            layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT).apply {
-                setMargins(0, dpToPx(10), 0, 0)
+            text = "Применить эти тайминги ко всем меткам"
+            stylePillButton(this, "#283246", null, 8, 11.5f)
+            layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, dpToPx(34)).apply {
+                setMargins(0, dpToPx(6), 0, 0)
             }
             setOnClickListener {
                 val dialog = android.app.AlertDialog.Builder(service, android.R.style.Theme_DeviceDefault_Dialog_Alert)
@@ -2617,7 +2962,7 @@ class UIManager(private val service: AutoClickService) {
                             nd.delayAfterMs = nDel
                             nd.repetitions = nRep
                         }
-                        Toast.makeText(service, "Применено", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(service, "Применено ко всем меткам", Toast.LENGTH_SHORT).show()
                     }
                     .setNegativeButton("Отмена", null)
                     .create()
@@ -2627,30 +2972,47 @@ class UIManager(private val service: AutoClickService) {
         }
 
         val hasTimingChanges = node.clickDurationMs != 30L || node.delayAfterMs != 300L || node.repetitions != 1
-        val timingsSection = addSection("⏱ Тайминги и Задержки", hasTimingChanges) { body ->
+        val timingsSection = addSection(
+            "⏱ 1. Тайминги и повторы",
+            hasTimingChanges,
+            startExpanded = (node.type == NodeType.CLICK && !node.isSwipe && !node.isHold)
+        ) { body ->
             body.addView(clickDurRow)
             body.addView(delayRow)
-            body.addView(tvRepetitions)
-            body.addView(repetitionsEdit)
+            body.addView(repRow)
             body.addView(applyTimingsBtn)
         }
 
         // --- SECTION: Анти-Детект ---
-        val (randomDelayRow, getRandomDelayRowMs) = createTimeInputRow("Рандомизация паузы до:", node.randomizeDelayMs)
+        val (randomDelayRow, getRandomDelayRowMs) = createTimeInputRow("Случайный разброс паузы (+до):", node.randomizeDelayMs)
         
-        val tvRandomRadius = TextView(service).apply { text="Рандомизация координат (px):"; setTextColor(Color.WHITE) }
+        val randRadiusRow = LinearLayout(service).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dpToPx(4), 0, dpToPx(4))
+        }
+        val tvRandomRadius = TextView(service).apply {
+            text = "Разброс точки клика (px):"
+            setTextColor(Color.WHITE)
+            setScaledTextSize(12.5f)
+            layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f)
+        }
         val randomRadiusEdit = EditText(service).apply {
             inputType = InputType.TYPE_CLASS_NUMBER
             setText(node.randomizeRadius.toString())
             setTextColor(Color.WHITE)
+            setScaledTextSize(12.5f)
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(dpToPx(64), WindowManager.LayoutParams.WRAP_CONTENT)
         }
+        randRadiusRow.addView(tvRandomRadius)
+        randRadiusRow.addView(randomRadiusEdit)
         
         val applyAntiDetectBtn = Button(service).apply {
-            text = "ПРИМЕНИТЬ КО ВСЕМ МЕТКАМ"
-            setBackgroundColor(Color.parseColor("#885555"))
-            setTextColor(Color.WHITE)
-            layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT).apply {
-                setMargins(0, dpToPx(10), 0, 0)
+            text = "Применить анти-детект ко всем меткам"
+            stylePillButton(this, "#283246", null, 8, 11.5f)
+            layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, dpToPx(34)).apply {
+                setMargins(0, dpToPx(6), 0, 0)
             }
             setOnClickListener {
                 val dialog = android.app.AlertDialog.Builder(service, android.R.style.Theme_DeviceDefault_Dialog_Alert)
@@ -2663,7 +3025,7 @@ class UIManager(private val service: AutoClickService) {
                             nd.randomizeDelayMs = nRD
                             nd.randomizeRadius = nRR
                         }
-                        Toast.makeText(service, "Применено", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(service, "Применено ко всем меткам", Toast.LENGTH_SHORT).show()
                     }
                     .setNegativeButton("Отмена", null)
                     .create()
@@ -2675,12 +3037,12 @@ class UIManager(private val service: AutoClickService) {
         // --- MANAGER SECTION ---
         var managerSection: View? = null
         if (node.type == NodeType.MANAGER) {
-            managerSection = addSection("🔀 Настройки Менеджера", true) { body ->
+            managerSection = addSection("🔀 Настройки Менеджера (Развилка)", true, startExpanded = true) { body ->
                 val desc = TextView(service).apply {
-                    text = "Менеджер по очереди проверяет Триггеры. Если Триггер срабатывает, происходит переход к указанной Метке."
-                    setTextColor(Color.LTGRAY)
-                    setScaledTextSize(12f)
-                    setPadding(0, 0, 0, 10)
+                    text = "Менеджер по очереди проверяет указанные шаги-условия. Как только условие совпало — переходит к целевому шагу."
+                    setTextColor(Color.parseColor("#B0BEC5"))
+                    setScaledTextSize(11.5f)
+                    setPadding(0, 0, 0, dpToPx(8))
                 }
                 body.addView(desc)
                 
@@ -2693,19 +3055,24 @@ class UIManager(private val service: AutoClickService) {
                         val row = LinearLayout(service).apply {
                             orientation = LinearLayout.HORIZONTAL
                             gravity = Gravity.CENTER_VERTICAL
-                            setPadding(0, 5, 0, 5)
+                            setPadding(dpToPx(8), dpToPx(4), dpToPx(8), dpToPx(4))
                             background = android.graphics.drawable.GradientDrawable().apply {
-                                setColor(Color.parseColor("#333333"))
-                                setCornerRadius(8f)
+                                setColor(Color.parseColor("#222836"))
+                                cornerRadius = dpToPx(8).toFloat()
+                            }
+                            layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT).apply {
+                                setMargins(0, 0, 0, dpToPx(4))
                             }
                         }
                         
-                        val txt1 = TextView(service).apply { text = "Триггер № "; setTextColor(Color.WHITE) }
+                        val txt1 = TextView(service).apply { text = "Если шаг #"; setTextColor(Color.WHITE); setScaledTextSize(12f) }
                         val checkEdit = EditText(service).apply {
                             inputType = InputType.TYPE_CLASS_NUMBER
                             setText(if(route.checkNodeId != -1) route.checkNodeId.toString() else "")
                             setTextColor(Color.WHITE)
-                            layoutParams = LinearLayout.LayoutParams(dpToPx(40), WindowManager.LayoutParams.WRAP_CONTENT)
+                            setScaledTextSize(12f)
+                            gravity = Gravity.CENTER
+                            layoutParams = LinearLayout.LayoutParams(dpToPx(44), WindowManager.LayoutParams.WRAP_CONTENT)
                             addTextChangedListener(object: android.text.TextWatcher {
                                 override fun afterTextChanged(s: android.text.Editable?) {
                                     s?.toString()?.toIntOrNull()?.let { route.checkNodeId = it }
@@ -2714,12 +3081,14 @@ class UIManager(private val service: AutoClickService) {
                                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
                             })
                         }
-                        val txt2 = TextView(service).apply { text = " ➔ Метка № "; setTextColor(Color.WHITE) }
+                        val txt2 = TextView(service).apply { text = " ➔ идти к #"; setTextColor(Color.parseColor("#69F0AE")); setScaledTextSize(12f) }
                         val goEdit = EditText(service).apply {
                             inputType = InputType.TYPE_CLASS_NUMBER
                             setText(if(route.onSuccessGoToId != -1) route.onSuccessGoToId.toString() else "")
                             setTextColor(Color.WHITE)
-                            layoutParams = LinearLayout.LayoutParams(dpToPx(40), WindowManager.LayoutParams.WRAP_CONTENT)
+                            setScaledTextSize(12f)
+                            gravity = Gravity.CENTER
+                            layoutParams = LinearLayout.LayoutParams(dpToPx(44), WindowManager.LayoutParams.WRAP_CONTENT)
                             addTextChangedListener(object: android.text.TextWatcher {
                                 override fun afterTextChanged(s: android.text.Editable?) {
                                     s?.toString()?.toIntOrNull()?.let { route.onSuccessGoToId = it }
@@ -2728,12 +3097,13 @@ class UIManager(private val service: AutoClickService) {
                                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
                             })
                         }
+                        val spacer = View(service).apply { layoutParams = LinearLayout.LayoutParams(0, 1, 1f) }
                         val delBtn = Button(service).apply {
-                            text = "X"
-                            setTextColor(Color.RED)
-                            setBackgroundColor(Color.TRANSPARENT)
-                            setPadding(5, 5, 5, 5)
-                            layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT)
+                            text = "✕"
+                            stylePillButton(this, "#3A1D24", null, 6, 11f)
+                            setTextColor(Color.parseColor("#FF8A80"))
+                            setPadding(0, 0, 0, 0)
+                            layoutParams = LinearLayout.LayoutParams(dpToPx(28), dpToPx(28))
                             setOnClickListener {
                                 val mut = node.managerRoutes.toMutableList()
                                 mut.removeAt(index)
@@ -2746,14 +3116,18 @@ class UIManager(private val service: AutoClickService) {
                         row.addView(checkEdit)
                         row.addView(txt2)
                         row.addView(goEdit)
+                        row.addView(spacer)
                         row.addView(delBtn)
                         listContainer.addView(row)
                     }
                     
                     val addBtn = Button(service).apply {
-                        text = "+ ДОБАВИТЬ УСЛОВИЕ"
-                        setTextColor(Color.parseColor("#4CAF50"))
-                        setBackgroundColor(Color.TRANSPARENT)
+                        text = "＋ Добавить правило проверки"
+                        stylePillButton(this, "#1E3A2F", "#2E7D32", 8, 12f)
+                        setTextColor(Color.parseColor("#69F0AE"))
+                        layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, dpToPx(34)).apply {
+                            setMargins(0, dpToPx(4), 0, 0)
+                        }
                         setOnClickListener {
                             val mut = node.managerRoutes.toMutableList()
                             mut.add(ManagerRoute(-1, -1))
@@ -2768,17 +3142,24 @@ class UIManager(private val service: AutoClickService) {
                 
                 val fallbackLayout = LinearLayout(service).apply {
                     orientation = LinearLayout.HORIZONTAL
-                    setPadding(0, 20, 0, 0)
+                    setPadding(0, dpToPx(8), 0, 0)
                     gravity = Gravity.CENTER_VERTICAL
                 }
-                fallbackLayout.addView(TextView(service).apply { text = "Если ничего не совпало, идти к №: "; setTextColor(Color.WHITE) })
+                fallbackLayout.addView(TextView(service).apply {
+                    text = "Если ничего не совпало, идти к #:"
+                    setTextColor(Color.WHITE)
+                    setScaledTextSize(12f)
+                    layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f)
+                })
                 val fallbackEdit = EditText(service).apply {
                     inputType = InputType.TYPE_CLASS_NUMBER
                     setText(node.nextNodeIdOnFail?.toString() ?: "")
-                    hint = "(Стоп)"
-                    setHintTextColor(Color.LTGRAY)
+                    hint = "Стоп"
+                    setHintTextColor(Color.parseColor("#78909C"))
                     setTextColor(Color.WHITE)
-                    layoutParams = LinearLayout.LayoutParams(dpToPx(60), WindowManager.LayoutParams.WRAP_CONTENT)
+                    setScaledTextSize(12f)
+                    gravity = Gravity.CENTER
+                    layoutParams = LinearLayout.LayoutParams(dpToPx(64), WindowManager.LayoutParams.WRAP_CONTENT)
                     addTextChangedListener(object: android.text.TextWatcher {
                         override fun afterTextChanged(s: android.text.Editable?) {
                             val v = s?.toString()?.toIntOrNull()
@@ -2793,23 +3174,12 @@ class UIManager(private val service: AutoClickService) {
             }
         }
         
-        val hasAntiDetect = node.randomizeDelayMs > 0 || node.randomizeRadius > 0
-        val antiDetectSection = addSection("🛡 Анти-Детект (Случайности)", hasAntiDetect) { body ->
-            body.addView(randomDelayRow)
-            body.addView(tvRandomRadius)
-            body.addView(randomRadiusEdit)
-            body.addView(applyAntiDetectBtn)
-        }
-        if (node.type == NodeType.CHECK_COLOR) {
-            antiDetectSection.visibility = View.GONE
-        }
-        
-        val macroSection = addSection("⚡ Настройки вызова скрипта", node.macroProfileName != null) { body ->
+        val macroSection = addSection("⚡ Вызов подпрограммы (профиля)", node.macroProfileName != null, startExpanded = (node.type == NodeType.MACRO)) { body ->
             val tvMacroDesc = TextView(service).apply {
-                text = "Если условие выполнится, будет загружен и запущен выбранный профиль."
-                setTextColor(Color.LTGRAY)
-                setScaledTextSize(12f)
-                setPadding(0, 0, 0, 10)
+                text = "При выполнении этого шага запустится выбранный сохранённый профиль."
+                setTextColor(Color.parseColor("#B0BEC5"))
+                setScaledTextSize(11.5f)
+                setPadding(0, 0, 0, dpToPx(8))
             }
             body.addView(tvMacroDesc)
             
@@ -2819,7 +3189,7 @@ class UIManager(private val service: AutoClickService) {
             spinnerItems.addAll(allKeys)
             
             val macroSpinner = android.widget.Spinner(service).apply {
-                val adapter = android.widget.ArrayAdapter(service, android.R.layout.simple_spinner_dropdown_item, spinnerItems)
+                val adapter = createThemedSpinnerAdapter(spinnerItems.toTypedArray())
                 this.adapter = adapter
                 
                 val currentIdx = spinnerItems.indexOf(node.macroProfileName ?: "")
@@ -2840,72 +3210,71 @@ class UIManager(private val service: AutoClickService) {
             body.addView(macroSpinner)
             
             val parallelSwitch = android.widget.Switch(service).apply {
-                text = "Исполнять фоном (Не прерывать текущий сценарий)"
-                setTextColor(Color.parseColor("#FFA500"))
+                text = "Запускать параллельно (не прерывая текущий сценарий)"
+                setTextColor(Color.parseColor("#FFD54F"))
+                setScaledTextSize(12f)
                 isChecked = node.macroRunParallel
                 setOnCheckedChangeListener { _, isChecked ->
                     node.macroRunParallel = isChecked
                 }
-                setPadding(20, 20, 0, 0)
+                setPadding(0, dpToPx(8), 0, 0)
             }
             body.addView(parallelSwitch)
         }
         if (node.type != NodeType.MACRO) {
             macroSection.visibility = View.GONE
-            if (node.type == NodeType.CHECK_COLOR) {
-                // If it's just check color (trigger), no antidetect
-                antiDetectSection.visibility = View.GONE
-            }
-        } else {
-            // It's a macro. Hide antidetect
-            antiDetectSection.visibility = View.GONE
         }
 
         // --- SECTION: Логика и Ветвление ---
         val isCondition = node.triggerMode != -1
 
-        val successLayout = LinearLayout(service).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, 0, 0, 0) }
-        successLayout.addView(TextView(service).apply { text = if (isCondition) "Успех (Идти к):" else "След. шаг:"; setTextColor(Color.WHITE); layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f) })
+        val successLayout = LinearLayout(service).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dpToPx(2), 0, dpToPx(2)) }
+        successLayout.addView(TextView(service).apply { text = if (isCondition) "При успехе ➔ шаг #:" else "Следующий шаг #:"; setTextColor(Color.WHITE); setScaledTextSize(12.5f); layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f) })
         val nextSuccessEdit = EditText(service).apply {
             inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_SIGNED
             setText(node.nextNodeIdOnSuccess?.toString() ?: "")
-            hint = if (isCondition) "(по порядку)" else "(-1 = стоп)"
-            setHintTextColor(Color.parseColor("#AAAAAA"))
+            hint = if (isCondition) "По порядку" else "-1 = Стоп"
+            setHintTextColor(Color.parseColor("#78909C"))
             setTextColor(Color.WHITE)
-            layoutParams = LinearLayout.LayoutParams(dpToPx(130), WindowManager.LayoutParams.WRAP_CONTENT)
+            setScaledTextSize(12.5f)
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(dpToPx(110), WindowManager.LayoutParams.WRAP_CONTENT)
         }
         successLayout.addView(nextSuccessEdit)
 
-        val failLayout = LinearLayout(service).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, 0, 0, 0) }
-        failLayout.addView(TextView(service).apply { text = "Ошибка (Идти к):"; setTextColor(Color.WHITE); layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f) })
+        val failLayout = LinearLayout(service).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dpToPx(2), 0, dpToPx(2)) }
+        failLayout.addView(TextView(service).apply { text = "При неудаче ➔ шаг #:"; setTextColor(Color.WHITE); setScaledTextSize(12.5f); layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f) })
         val nextFailEdit = EditText(service).apply {
             inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_SIGNED
             setText(node.nextNodeIdOnFail?.toString() ?: "")
-            hint = "(ждать)"
-            setHintTextColor(Color.parseColor("#AAAAAA"))
+            hint = "Ждать"
+            setHintTextColor(Color.parseColor("#78909C"))
             setTextColor(Color.WHITE)
-            layoutParams = LinearLayout.LayoutParams(dpToPx(130), WindowManager.LayoutParams.WRAP_CONTENT)
+            setScaledTextSize(12.5f)
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(dpToPx(110), WindowManager.LayoutParams.WRAP_CONTENT)
         }
         failLayout.addView(nextFailEdit)
 
-        val cycleLimitLayout = LinearLayout(service).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, 0, 0, 5) }
-        cycleLimitLayout.addView(TextView(service).apply { text = "Лим. проверок (0=∞):"; setTextColor(Color.WHITE); layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f) })
+        val cycleLimitLayout = LinearLayout(service).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dpToPx(2), 0, dpToPx(4)) }
+        cycleLimitLayout.addView(TextView(service).apply { text = "Макс. попыток проверки (0=∞):"; setTextColor(Color.WHITE); setScaledTextSize(12.5f); layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f) })
         val cycleLimitEdit = EditText(service).apply {
             inputType = InputType.TYPE_CLASS_NUMBER
             setText(node.maxCheckCycles?.toString() ?: "")
             hint = "∞"
-            setHintTextColor(Color.parseColor("#AAAAAA"))
+            setHintTextColor(Color.parseColor("#78909C"))
             setTextColor(Color.WHITE)
-            layoutParams = LinearLayout.LayoutParams(dpToPx(130), WindowManager.LayoutParams.WRAP_CONTENT)
+            setScaledTextSize(12.5f)
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(dpToPx(110), WindowManager.LayoutParams.WRAP_CONTENT)
         }
         cycleLimitLayout.addView(cycleLimitEdit)
         
-        val triggerModeLayout = LinearLayout(service).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 5, 0, 10) }
-        triggerModeLayout.addView(TextView(service).apply { text = "ТИП ТРИГГЕРА:"; setTextColor(Color.WHITE); setTypeface(null, android.graphics.Typeface.BOLD) })
+        val triggerModeLayout = LinearLayout(service).apply { orientation = LinearLayout.VERTICAL; setPadding(0, dpToPx(4), 0, dpToPx(8)) }
+        triggerModeLayout.addView(TextView(service).apply { text = "Проверять условие перед шагом:"; setTextColor(Color.parseColor("#B0BEC5")); setScaledTextSize(12f); setPadding(0, 0, 0, dpToPx(4)) })
         val triggerModeSpinner = android.widget.Spinner(service).apply {
             layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT)
-            setBackgroundColor(Color.parseColor("#444444"))
-            val adapter = createThemedSpinnerAdapter(arrayOf("Отключен (Обычный шаг)", "Цвет пикселя", "Фрагмент экрана", "Текст (OCR)"))
+            val adapter = createThemedSpinnerAdapter(arrayOf("Без условия (Обычный шаг)", "🎨 Цвет пикселя", "🖼 Картинка (Фрагмент экрана)", "🔤 Текст или числа (OCR)"))
             this.adapter = adapter
             setSelection(if (node.triggerMode > 2) 3 else node.triggerMode + 1)
             onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
@@ -2922,14 +3291,18 @@ class UIManager(private val service: AutoClickService) {
         triggerModeLayout.apply { addView(triggerModeSpinner) }
 
         val fragZoneBtn = Button(service).apply {
-            text = if (textZoneStartViews.containsKey(node.id)) "СКРЫТЬ ОБЛАСТЬ" else "ЗАДАТЬ ОБЛАСТЬ (ЗОНА)"
+            text = if (textZoneStartViews.containsKey(node.id)) "Скрыть рамку зоны на экране" else "🔲 Показать рамку зоны на экране"
+            stylePillButton(this, "#283246", "#3E506B", 8, 12f)
+            layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, dpToPx(36)).apply {
+                setMargins(0, dpToPx(4), 0, dpToPx(4))
+            }
             setOnClickListener {
                 if (textZoneStartViews.containsKey(node.id)) {
                     removeTextZoneMarkers(node.id)
-                    text = "ЗАДАТЬ ОБЛАСТЬ (ЗОНА)"
+                    text = "🔲 Показать рамку зоны на экране"
                 } else {
                     createTextZoneMarkers(node)
-                    text = "СКРЫТЬ ОБЛАСТЬ"
+                    text = "Скрыть рамку зоны на экране"
                 }
             }
         }
@@ -2949,7 +3322,6 @@ class UIManager(private val service: AutoClickService) {
         textLangLayout.addView(TextView(service).apply { text = "Язык:"; setTextColor(Color.WHITE); layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 0.4f) })
         val textLangSpinner = android.widget.Spinner(service).apply {
             layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 0.6f)
-            setBackgroundColor(Color.parseColor("#444444"))
             val langs = arrayOf("Русский" to "rus", "Английский" to "eng", "Рус + Англ" to "rus+eng")
             this.adapter = createThemedSpinnerAdapter(langs.map { it.first }.toTypedArray())
             setSelection(if (node.targetLanguage == "eng") 1 else if (node.targetLanguage == "rus+eng") 2 else 0)
@@ -2970,8 +3342,8 @@ class UIManager(private val service: AutoClickService) {
         // Smart OCR Math Options
         val smartOcrLayout = LinearLayout(service).apply { orientation = LinearLayout.VERTICAL; setPadding(0, dpToPx(10), 0, dpToPx(5)) }
         val smartOcrCheck = android.widget.CheckBox(service).apply {
-            text = "Умный OCR: Математическое сравнение"
-            setTextColor(Color.parseColor("#4CAF50"))
+            text = "Умный OCR: Математическое сравнение чисел"
+            setTextColor(Color.parseColor("#69F0AE"))
             isChecked = node.isSmartOcr
         }
         smartOcrLayout.addView(smartOcrCheck)
@@ -2982,7 +3354,6 @@ class UIManager(private val service: AutoClickService) {
         smartOcrOpLayout.addView(TextView(service).apply { text = "Оператор:"; setTextColor(Color.WHITE); layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 0.4f) })
         val smartOcrOpSpinner = android.widget.Spinner(service).apply {
             layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 0.6f)
-            setBackgroundColor(Color.parseColor("#444444"))
             val ops = arrayOf("==", "!=", ">", "<", ">=", "<=")
             this.adapter = createThemedSpinnerAdapter(ops)
             setSelection(ops.indexOf(node.ocrOperator).coerceAtLeast(0))
@@ -3046,11 +3417,10 @@ class UIManager(private val service: AutoClickService) {
         smartOcrLayout.addView(smartOcrSettings)
 
         val colorBehaviorLayout = LinearLayout(service).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 5, 0, 15) }
-        colorBehaviorLayout.addView(TextView(service).apply { text = "ПОВЕДЕНИЕ (ДЛЯ ЦВЕТА):"; setTextColor(Color.WHITE); setTypeface(null, android.graphics.Typeface.BOLD) })
+        colorBehaviorLayout.addView(TextView(service).apply { text = "Режим проверки цвета:"; setTextColor(Color.parseColor("#B0BEC5")); setScaledTextSize(12f); setPadding(0, 0, 0, dpToPx(4)) })
         val colorBehaviorSpinner = android.widget.Spinner(service).apply {
             layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT)
-            setBackgroundColor(Color.parseColor("#444444"))
-            val arr = arrayOf("Статичный (Заданный вручную)", "Адаптивный (При изменении за время)", "Сравнить с другой меткой", "Сравнить с другой точкой")
+            val arr = arrayOf("Статичный (Заданный цвет)", "Динамический (Изменение со временем)", "Сравнить с другой меткой", "Сравнить с другой точкой")
             val adapter = createThemedSpinnerAdapter(arr)
             this.adapter = adapter
             val sel = if (node.dynamicColorUpdate) 1 else if (node.compareToNodeId != null) 2 else if (node.colorCompareX != null) 3 else 0
@@ -3086,15 +3456,21 @@ class UIManager(private val service: AutoClickService) {
 
         val colorPreview = TextView(service).apply {
             val hasColor = node.targetColor != null
-            text = if (hasColor) String.format("#%06X", 0xFFFFFF and node.targetColor!!) + " (Сбросить - долгое наж.)" else "Условие цвета (Нет)"
-            setBackgroundColor(node.targetColor ?: Color.TRANSPARENT)
+            text = if (hasColor) String.format("Выбран цвет: #%06X  (удерж. кнопку для сброса)", 0xFFFFFF and node.targetColor!!) else "Цвет ещё не захвачен"
+            setBackgroundColor(node.targetColor ?: Color.parseColor("#263238"))
             setTextColor(if (hasColor && Color.luminance(node.targetColor!!) > 0.5) Color.BLACK else Color.WHITE)
-            setPadding(20,20,20,20)
+            setPadding(dpToPx(10), dpToPx(8), dpToPx(10), dpToPx(8))
+            setScaledTextSize(12f)
             gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(0, dpToPx(6), 0, dpToPx(6))
+            }
         }
 
         val capBtn = Button(service).apply {
-            text = "ЗАХВАТ ЦВЕТА ПОД МЕТКОЙ"
+            text = "🎯 Захватить цвет под меткой"
+            stylePillButton(this, "#1976D2", null, 8, 12.5f)
+            layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, dpToPx(38))
             setOnClickListener {
                 updateNodeScreenPosition(node)
                 modMenu?.visibility = View.INVISIBLE
@@ -3116,17 +3492,17 @@ class UIManager(private val service: AutoClickService) {
                         if (color != null) {
                             node.targetColor = color
                             colorPreview.setBackgroundColor(color)
-                            colorPreview.text = String.format("#%06X", 0xFFFFFF and color)
+                            colorPreview.text = String.format("Выбран цвет: #%06X", 0xFFFFFF and color)
                             colorPreview.setTextColor(if (Color.luminance(color) > 0.5) Color.BLACK else Color.WHITE)
-                            Toast.makeText(service, "Цвет изменен!", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(service, "Цвет захвачен!", Toast.LENGTH_SHORT).show()
                         }
                     }
                 }, 300)
             }
             setOnLongClickListener {
                 node.targetColor = null
-                colorPreview.setBackgroundColor(Color.TRANSPARENT)
-                colorPreview.text = "Условие цвета (Нет)"
+                colorPreview.setBackgroundColor(Color.parseColor("#263238"))
+                colorPreview.text = "Цвет ещё не захвачен"
                 colorPreview.setTextColor(Color.WHITE)
                 Toast.makeText(service, "Цвет сброшен!", Toast.LENGTH_SHORT).show()
                 true
@@ -3134,11 +3510,10 @@ class UIManager(private val service: AutoClickService) {
         }
 
         val colorOpLayout = LinearLayout(service).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, 5, 0, 5) }
-        colorOpLayout.addView(TextView(service).apply { text = "Условие:"; setTextColor(Color.WHITE); layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 0.4f) })
+        colorOpLayout.addView(TextView(service).apply { text = "Когда срабатывать:"; setTextColor(Color.WHITE); setScaledTextSize(12.5f); layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 0.45f) })
         val colorOpSpinner = android.widget.Spinner(service).apply {
-            layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 0.6f)
-            setBackgroundColor(Color.parseColor("#444444"))
-            val adapter = createThemedSpinnerAdapter(arrayOf("СОВПАДАЕТ (==)", "НЕ СОВПАДАЕТ (!=)"))
+            layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 0.55f)
+            val adapter = createThemedSpinnerAdapter(arrayOf("Совпадает (==)", "Не совпадает (!=)"))
             this.adapter = adapter
             setSelection(if (node.colorOperator == "==") 0 else 1)
             onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
@@ -3151,60 +3526,73 @@ class UIManager(private val service: AutoClickService) {
         colorOpLayout.addView(colorOpSpinner)
 
         val colorToleranceLayout = LinearLayout(service).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, 5, 0, 5) }
-        colorToleranceLayout.addView(TextView(service).apply { text = "Допуск (0-255):"; setTextColor(Color.WHITE); layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f) })
+        colorToleranceLayout.addView(TextView(service).apply { text = "Погрешность оттенка (0-255):"; setTextColor(Color.WHITE); setScaledTextSize(12.5f); layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f) })
         val colorTolEdit = EditText(service).apply {
             inputType = InputType.TYPE_CLASS_NUMBER
             setText(node.colorTolerance.toString())
             setTextColor(Color.WHITE)
-            layoutParams = LinearLayout.LayoutParams(dpToPx(130), WindowManager.LayoutParams.WRAP_CONTENT)
+            setScaledTextSize(12.5f)
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(dpToPx(72), WindowManager.LayoutParams.WRAP_CONTENT)
         }
         colorToleranceLayout.addView(colorTolEdit)
 
         val linkedLayout = LinearLayout(service).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, 5, 0, 5) }
-        linkedLayout.addView(TextView(service).apply { text = "Линковка к Метке №:"; setTextColor(Color.WHITE); layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f) })
+        linkedLayout.addView(TextView(service).apply { text = "Доп. условие с меткой #:"; setTextColor(Color.WHITE); setScaledTextSize(12.5f); layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f) })
         val linkedEdit = EditText(service).apply {
             inputType = InputType.TYPE_CLASS_NUMBER
             setText(if (node.compareToNodeId != null) node.compareToNodeId.toString() else node.linkedConditionNodeId?.toString() ?: "")
-            hint = "(Нет)"
-            setHintTextColor(Color.parseColor("#AAAAAA"))
+            hint = "Нет"
+            setHintTextColor(Color.parseColor("#78909C"))
             setTextColor(Color.WHITE)
-            layoutParams = LinearLayout.LayoutParams(dpToPx(130), WindowManager.LayoutParams.WRAP_CONTENT)
+            setScaledTextSize(12.5f)
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(dpToPx(72), WindowManager.LayoutParams.WRAP_CONTENT)
         }
         linkedLayout.addView(linkedEdit)
 
         val linkedOpBtn = Button(service).apply {
-            text = if (node.linkedConditionOperator == "AND") "ОБЪЕДИНЕНИЕ: И (AND)" else "ОБЪЕДИНЕНИЕ: ИЛИ (OR)"
+            text = if (node.linkedConditionOperator == "AND") "Связка условий: И (AND)" else "Связка условий: ИЛИ (OR)"
+            stylePillButton(this, "#283246", null, 8, 11.5f)
+            layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, dpToPx(34)).apply {
+                setMargins(0, dpToPx(4), 0, 0)
+            }
             setOnClickListener {
                 node.linkedConditionOperator = if (node.linkedConditionOperator == "AND") "OR" else "AND"
-                text = if (node.linkedConditionOperator == "AND") "ОБЪЕДИНЕНИЕ: И (AND)" else "ОБЪЕДИНЕНИЕ: ИЛИ (OR)"
+                text = if (node.linkedConditionOperator == "AND") "Связка условий: И (AND)" else "Связка условий: ИЛИ (OR)"
             }
         }
 
         val imgThresholdLayout = LinearLayout(service).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, 5, 0, 5) }
-        imgThresholdLayout.addView(TextView(service).apply { text = "Совпадение (%):"; setTextColor(Color.WHITE); layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f) })
+        imgThresholdLayout.addView(TextView(service).apply { text = "Мин. совпадение (%):"; setTextColor(Color.WHITE); setScaledTextSize(12.5f); layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f) })
         val imgThresholdEdit = EditText(service).apply {
             inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
             setText(node.imageThreshold.toString())
             setTextColor(Color.WHITE)
-            layoutParams = LinearLayout.LayoutParams(dpToPx(130), WindowManager.LayoutParams.WRAP_CONTENT)
+            setScaledTextSize(12.5f)
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(dpToPx(72), WindowManager.LayoutParams.WRAP_CONTENT)
         }
         imgThresholdLayout.addView(imgThresholdEdit)
 
         val searchRadiusLayout = LinearLayout(service).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, 5, 0, 5) }
-        searchRadiusLayout.addView(TextView(service).apply { text = "Зона поиска (px):"; setTextColor(Color.WHITE); layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f) })
+        searchRadiusLayout.addView(TextView(service).apply { text = "Радиус поиска вокруг зоны (px):"; setTextColor(Color.WHITE); setScaledTextSize(12.5f); layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f) })
         val searchRadiusEdit = EditText(service).apply {
             inputType = InputType.TYPE_CLASS_NUMBER
             setText(node.searchRadius.toString())
             setTextColor(Color.WHITE)
-            layoutParams = LinearLayout.LayoutParams(dpToPx(130), WindowManager.LayoutParams.WRAP_CONTENT)
+            setScaledTextSize(12.5f)
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(dpToPx(72), WindowManager.LayoutParams.WRAP_CONTENT)
         }
         searchRadiusLayout.addView(searchRadiusEdit)
 
         val resolutionScaleLayout = LinearLayout(service).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, 5, 0, 5) }
         val resolutionScaleText = TextView(service).apply { 
-            text = "Качество (${(node.checkResolutionScale * 100).toInt()}%):"
+            text = "Точность (${(node.checkResolutionScale * 100).toInt()}%):"
             setTextColor(Color.WHITE)
-            layoutParams = LinearLayout.LayoutParams(dpToPx(130), WindowManager.LayoutParams.WRAP_CONTENT) 
+            setScaledTextSize(12f)
+            layoutParams = LinearLayout.LayoutParams(dpToPx(120), WindowManager.LayoutParams.WRAP_CONTENT) 
         }
         val resolutionScaleBar = android.widget.SeekBar(service).apply {
             max = 90
@@ -3215,9 +3603,9 @@ class UIManager(private val service: AutoClickService) {
         resolutionScaleLayout.addView(resolutionScaleBar)
 
         val imgPreview = android.widget.ImageView(service).apply {
-            layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, dpToPx(150)).apply { 
+            layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, dpToPx(130)).apply { 
                 gravity = Gravity.CENTER_HORIZONTAL 
-                setMargins(0, dpToPx(10), 0, dpToPx(10))
+                setMargins(0, dpToPx(8), 0, dpToPx(8))
             }
             scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
             adjustViewBounds = true
@@ -3244,14 +3632,14 @@ class UIManager(private val service: AutoClickService) {
                     imgPreview.setBackgroundColor(Color.TRANSPARENT)
                 } catch(e: Exception) {}
             } else {
-                imgPreview.setBackgroundColor(Color.parseColor("#555555"))
+                imgPreview.setBackgroundColor(Color.parseColor("#263238"))
             }
         }
         
         resolutionScaleBar.setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: android.widget.SeekBar?, progress: Int, fromUser: Boolean) {
                 val scale = (progress + 10) / 100f
-                resolutionScaleText.text = "Качество (${(scale * 100).toInt()}%):"
+                resolutionScaleText.text = "Точность (${(scale * 100).toInt()}%):"
                 updatePreviewImage()
             }
             override fun onStartTrackingTouch(seekBar: android.widget.SeekBar?) {}
@@ -3260,9 +3648,8 @@ class UIManager(private val service: AutoClickService) {
         
         updatePreviewImage()
 
-        
         val imageFullScreenSearchCheck = android.widget.CheckBox(service).apply {
-            text = "Искать фрагмент по всему экрану"
+            text = "Искать картинку по всему экрану"
             setTextColor(Color.parseColor("#80CBC4"))
             isChecked = node.imageFullScreenSearch
             setOnCheckedChangeListener { _, isChecked ->
@@ -3271,7 +3658,7 @@ class UIManager(private val service: AutoClickService) {
         }
 
         val imageClickFoundCenterCheck = android.widget.CheckBox(service).apply {
-            text = "Нажимать в центр найденного фрагмента"
+            text = "Нажимать в центр найденной картинки"
             setTextColor(Color.parseColor("#FFCC00"))
             isChecked = node.imageClickFoundCenter
             setOnCheckedChangeListener { _, isChecked ->
@@ -3280,7 +3667,11 @@ class UIManager(private val service: AutoClickService) {
         }
 
         val capImgBtn = Button(service).apply {
-            text = if (node.triggerMode == 1) "📸 ЗАХВАТИТЬ ФРАГМЕНТ С ЭКРАНА\n(Удерживать для сброса)" else "ТЕСТ РАСПОЗНАВАНИЯ ТЕКСТА"
+            text = if (node.triggerMode == 1) "📸 Захватить образец с экрана (удерж. = сброс)" else "🔍 Проверить распознавание текста"
+            stylePillButton(this, "#1976D2", null, 8, 12f)
+            layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, dpToPx(38)).apply {
+                setMargins(0, dpToPx(4), 0, dpToPx(4))
+            }
             setOnClickListener {
                 updateNodeScreenPosition(node)
                 if (node.triggerMode == 2) {
@@ -3296,7 +3687,7 @@ class UIManager(private val service: AutoClickService) {
                 }
                 if (node.textZoneStartX == 0 && node.textZoneStartY == 0 && node.textZoneEndX == 0 && node.textZoneEndY == 0) {
                     createTextZoneMarkers(node)
-                    fragZoneBtn.text = "СКРЫТЬ ОБЛАСТЬ"
+                    fragZoneBtn.text = "Скрыть рамку зоны на экране"
                 }
                 modMenu?.visibility = View.INVISIBLE
                 linesOverlayView?.visibility = View.INVISIBLE
@@ -3335,7 +3726,7 @@ class UIManager(private val service: AutoClickService) {
                 node.invalidateImageCache()
                 node.targetImageBase64 = null
                 imgPreview.setImageBitmap(null)
-                imgPreview.setBackgroundColor(Color.parseColor("#555555"))
+                imgPreview.setBackgroundColor(Color.parseColor("#263238"))
                 if (node.triggerMode == 1) {
                     Toast.makeText(service, "Фрагмент сброшен!", Toast.LENGTH_SHORT).show()
                 } else {
@@ -3346,9 +3737,11 @@ class UIManager(private val service: AutoClickService) {
         }
 
         val importImgBtn = Button(service).apply {
-            text = "📂 ЗАГРУЗИТЬ ИЗОБРАЖЕНИЕ ИЗ ГАЛЕРЕИ / ФАЙЛА"
-            setBackgroundColor(Color.parseColor("#37474F"))
-            setTextColor(Color.WHITE)
+            text = "📂 Загрузить картинку из галереи / файла"
+            stylePillButton(this, "#283246", "#3E506B", 8, 12f)
+            layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, dpToPx(36)).apply {
+                setMargins(0, 0, 0, dpToPx(4))
+            }
             setOnClickListener {
                 val intent = android.content.Intent(service, MainActivity::class.java).apply {
                     action = "ACTION_IMPORT_IMAGE"
@@ -3360,9 +3753,9 @@ class UIManager(private val service: AutoClickService) {
         }
 
         val testImgSearchBtn = Button(service).apply {
-            text = "🔍 ТЕСТ ПОИСКА ФРАГМЕНТА НА ЭКРАНЕ"
-            setBackgroundColor(Color.parseColor("#2E5B82"))
-            setTextColor(Color.WHITE)
+            text = "🎯 Тест поиска картинки на экране"
+            stylePillButton(this, "#00695C", null, 8, 12f)
+            layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, dpToPx(36))
             setOnClickListener {
                 updateNodeScreenPosition(node)
                 node.colorTolerance = colorTolEdit.text.toString().toIntOrNull() ?: 15
@@ -3393,8 +3786,182 @@ class UIManager(private val service: AutoClickService) {
             }
         }
 
+        // --- SECTION: Жест (Свайп / Удержание / Синхронизация) ---
+        val syncLayout = LinearLayout(service).apply { orientation = LinearLayout.VERTICAL; setPadding(0, dpToPx(4), 0, dpToPx(4)) }
+        syncLayout.addView(TextView(service).apply { text = "Нажать одновременно с шагами (через запятую):"; setTextColor(Color.parseColor("#B0BEC5")); setScaledTextSize(12f) })
+        val syncEdit = EditText(service).apply {
+            inputType = InputType.TYPE_CLASS_TEXT
+            setText(node.syncWithNodeIds)
+            hint = "Например: 2, 3"
+            setHintTextColor(Color.parseColor("#78909C"))
+            setTextColor(Color.WHITE)
+            setScaledTextSize(12.5f)
+            layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT)
+        }
+        syncLayout.addView(syncEdit)
+
+        val swipeLayout = LinearLayout(service).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dpToPx(6), 0, dpToPx(6)); gravity = Gravity.CENTER_VERTICAL }
+        val (holdDurRow, getHoldDurRowMs) = createTimeInputRow("Длит. зажатия (в фоне):", node.holdDurationMs)
+        val holdHintTv = TextView(service).apply {
+            text = "💡 Метка зажимает экран на указанное время, а макрос сразу продолжает выполнять следующие шаги"
+            setTextColor(Color.parseColor("#80CBC4"))
+            setScaledTextSize(11f)
+            setPadding(0, 0, 0, dpToPx(6))
+            visibility = if (node.isHold && !node.isSwipe) View.VISIBLE else View.GONE
+        }
+        holdDurRow.visibility = if (node.isHold && !node.isSwipe) View.VISIBLE else View.GONE
+
+        lateinit var holdBtnRef: Button
+        val swipeBtn = Button(service).apply {
+            text = if (node.isSwipe) "↗ Свайп: ВКЛ" else "↗ Свайп: ВЫКЛ"
+            stylePillButton(this, if (node.isSwipe) "#1976D2" else "#283246", null, 8, 12f)
+            layoutParams = LinearLayout.LayoutParams(0, dpToPx(36), 1f).apply {
+                setMargins(0, 0, dpToPx(4), 0)
+            }
+            setOnClickListener {
+                node.isSwipe = !node.isSwipe
+                if (node.isSwipe) {
+                    node.isHold = false
+                    holdBtnRef.text = "✋ Удержание: ВЫКЛ"
+                    stylePillButton(holdBtnRef, "#283246", null, 8, 12f)
+                    holdDurRow.visibility = View.GONE
+                    holdHintTv.visibility = View.GONE
+                    if (node.swipeTargetNodeId == null && node.swipePathPoints.isEmpty()) {
+                        createSwipeEndMarker(node)
+                    }
+                } else {
+                    removeSwipeEndMarker(node.id)
+                }
+                text = if (node.isSwipe) "↗ Свайп: ВКЛ" else "↗ Свайп: ВЫКЛ"
+                stylePillButton(this, if (node.isSwipe) "#1976D2" else "#283246", null, 8, 12f)
+                invalidateLines()
+            }
+        }
+        val holdBtn = Button(service).apply {
+            text = if (node.isHold && !node.isSwipe) "✋ Удержание: ВКЛ" else "✋ Удержание: ВЫКЛ"
+            stylePillButton(this, if (node.isHold && !node.isSwipe) "#00796B" else "#283246", null, 8, 12f)
+            layoutParams = LinearLayout.LayoutParams(0, dpToPx(36), 1f).apply {
+                setMargins(dpToPx(4), 0, 0, 0)
+            }
+            setOnClickListener {
+                node.isHold = !node.isHold
+                if (node.isHold) {
+                    node.isSwipe = false
+                    swipeBtn.text = "↗ Свайп: ВЫКЛ"
+                    stylePillButton(swipeBtn, "#283246", null, 8, 12f)
+                    removeSwipeEndMarker(node.id)
+                }
+                text = if (node.isHold) "✋ Удержание: ВКЛ" else "✋ Удержание: ВЫКЛ"
+                stylePillButton(this, if (node.isHold) "#00796B" else "#283246", null, 8, 12f)
+                holdDurRow.visibility = if (node.isHold) View.VISIBLE else View.GONE
+                holdHintTv.visibility = if (node.isHold) View.VISIBLE else View.GONE
+                invalidateLines()
+            }
+        }
+        holdBtnRef = holdBtn
+        swipeLayout.addView(swipeBtn)
+        swipeLayout.addView(holdBtn)
+        
+        val (swipeDurRow, getSwipeDurRowMs) = createTimeInputRow("Длительность свайпа:", node.swipeDurationMs)
+        
+        val swipeDeltaLayout = LinearLayout(service).apply { orientation = LinearLayout.VERTICAL; setPadding(0, dpToPx(6), 0, 0) }
+        val modeSpinnerLayout = LinearLayout(service).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        modeSpinnerLayout.addView(TextView(service).apply { text = "Тип траектории: "; setTextColor(Color.WHITE); setScaledTextSize(12.5f) })
+        val modeSpinner = android.widget.Spinner(service).apply {
+            adapter = createThemedSpinnerAdapter(arrayOf("Прямая к суб-метке", "Прямая к шагу #ID", "Кривая (Нарисовать пальцем)"))
+            setSelection(if (node.swipePathPoints.isNotEmpty()) 2 else if (node.swipeTargetNodeId != null) 1 else 0)
+            layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        modeSpinnerLayout.addView(modeSpinner)
+        swipeDeltaLayout.addView(modeSpinnerLayout)
+
+        val swipeTargetEditLayout = LinearLayout(service).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 5, 0, 0); gravity = Gravity.CENTER_VERTICAL }
+        swipeTargetEditLayout.addView(TextView(service).apply { text = "Свайп к шагу #: "; setTextColor(Color.WHITE); setScaledTextSize(12.5f) })
+        val swipeTargetEdit = EditText(service).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER
+            setText(node.swipeTargetNodeId?.toString() ?: "")
+            hint = "ID"
+            setHintTextColor(Color.parseColor("#78909C"))
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(dpToPx(80), WindowManager.LayoutParams.WRAP_CONTENT)
+        }
+        swipeTargetEditLayout.addView(swipeTargetEdit)
+        swipeDeltaLayout.addView(swipeTargetEditLayout)
+
+        val customPathLayout = LinearLayout(service).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dpToPx(6), 0, dpToPx(4))
+        }
+        val customPathInfoTv = TextView(service).apply {
+            text = if (node.swipePathPoints.size >= 2) {
+                "✅ Записана траектория: ${node.swipePathPoints.size} точек (${node.swipeDurationMs} мс)"
+            } else {
+                "Траектория не записана (нажмите кнопку ниже и проведите пальцем по экрану)"
+            }
+            setTextColor(if (node.swipePathPoints.size >= 2) Color.parseColor("#69F0AE") else Color.parseColor("#B0BEC5"))
+            setScaledTextSize(11f)
+            setPadding(0, 0, 0, dpToPx(4))
+        }
+        val recordSwipePathBtn = Button(service).apply {
+            text = "✍️ Нарисовать траекторию пальцем на экране"
+            stylePillButton(this, "#00838F", null, 8, 12f)
+            layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, dpToPx(36))
+            setOnClickListener {
+                modMenu?.visibility = View.GONE
+                service.startSingleSwipeRecording(node) {
+                    modMenu?.visibility = View.VISIBLE
+                    showEditNodeMenu(node)
+                }
+            }
+        }
+        customPathLayout.addView(customPathInfoTv)
+        customPathLayout.addView(recordSwipePathBtn)
+        swipeDeltaLayout.addView(customPathLayout)
+        
+        modeSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(p0: android.widget.AdapterView<*>?, p1: View?, pos: Int, p3: Long) {
+                swipeTargetEditLayout.visibility = if (pos == 1) View.VISIBLE else View.GONE
+                customPathLayout.visibility = if (pos == 2) View.VISIBLE else View.GONE
+                
+                if (pos == 0) {
+                    node.swipeTargetNodeId = null
+                    node.swipePathPoints = emptyList()
+                    if (node.isSwipe) createSwipeEndMarker(node)
+                } else if (pos == 1) {
+                    removeSwipeEndMarker(node.id)
+                    node.swipePathPoints = emptyList()
+                } else if (pos == 2) {
+                    node.swipeTargetNodeId = null
+                    if (node.isSwipe && node.swipePathPoints.isNotEmpty()) {
+                        createSwipeEndMarker(node)
+                    }
+                }
+                invalidateLines()
+            }
+            override fun onNothingSelected(p0: android.widget.AdapterView<*>?) {}
+        }
+        
+        val hasSwipeChanges = node.syncWithNodeIds.isNotEmpty() || node.isSwipe || node.isHold || node.swipeTargetNodeId != null || node.swipeDurationMs != 500L
+        val syncSwipeSection = addSection(
+            "👆 2. Жест (Свайп / Удержание / Мультитач)",
+            hasSwipeChanges,
+            startExpanded = (node.isSwipe || node.isHold)
+        ) { body ->
+            body.addView(swipeLayout)
+            body.addView(holdHintTv)
+            body.addView(holdDurRow)
+            body.addView(swipeDurRow)
+            body.addView(swipeDeltaLayout)
+            body.addView(syncLayout)
+        }
+
         val hasLogicChanges = node.targetColor != null || node.targetImageBase64 != null || node.targetText != null || node.colorOperator != "==" || node.colorTolerance != 15 || node.linkedConditionNodeId != null || node.compareToNodeId != null || node.dynamicColorUpdate || node.triggerMode >= 0
-        val logicSection = addSection("👁 Настройки Поиска (Условие)", hasLogicChanges) { body ->
+        val logicSection = addSection(
+            "👁 3. Условие срабатывания (Цвет / Картинка / Текст)",
+            hasLogicChanges,
+            startExpanded = (node.type == NodeType.CHECK_COLOR || node.triggerMode != -1)
+        ) { body ->
             body.addView(triggerModeLayout)
             
             if (node.triggerMode == 0) { // Color Pixel
@@ -3443,7 +4010,11 @@ class UIManager(private val service: AutoClickService) {
         }
 
         val hasRoutingChanges = node.nextNodeIdOnSuccess != null || node.nextNodeIdOnFail != null || node.maxCheckCycles != null
-        val routingSection = addSection("🛣 Маршрутизация (Куда идти дальше)", hasRoutingChanges) { body ->
+        val routingSection = addSection(
+            "🛣 4. Переходы (Куда идти после шага)",
+            hasRoutingChanges,
+            startExpanded = hasRoutingChanges
+        ) { body ->
             body.addView(successLayout)
             if (node.triggerMode != -1) {
                 body.addView(failLayout)
@@ -3451,193 +4022,26 @@ class UIManager(private val service: AutoClickService) {
             }
         }
 
+        val hasAntiDetect = node.randomizeDelayMs > 0 || node.randomizeRadius > 0
+        val antiDetectSection = addSection(
+            "🛡 5. Анти-Детект (Случайный разброс)",
+            hasAntiDetect,
+            startExpanded = false
+        ) { body ->
+            body.addView(randomDelayRow)
+            body.addView(randRadiusRow)
+            body.addView(applyAntiDetectBtn)
+        }
+
         if (appMode != AppMode.ADVANCED) {
             successLayout.visibility = View.GONE
             failLayout.visibility = View.GONE
             cycleLimitLayout.visibility = View.GONE
         }
-        
-        if (false) {
-            colorPreview.visibility = View.GONE
-            capBtn.visibility = View.GONE
-            capImgBtn.visibility = View.GONE
-            imgPreview.visibility = View.GONE
-            imgThresholdLayout.visibility = View.GONE
-            searchRadiusLayout.visibility = View.GONE
-        }
-        if (appMode == AppMode.SEQUENTIAL && node.type == NodeType.CLICK) {
-            colorPreview.visibility = View.GONE
-            capBtn.visibility = View.GONE
-            capImgBtn.visibility = View.GONE
-            imgPreview.visibility = View.GONE
-            imgThresholdLayout.visibility = View.GONE
-            searchRadiusLayout.visibility = View.GONE
-        }
 
-        // Hide entire logic section if nothing is visible inside
         if (appMode == AppMode.SEQUENTIAL && node.type == NodeType.CLICK) {
             logicSection.visibility = View.GONE
             routingSection.visibility = View.GONE
-        }
-
-        // --- SECTION: Синхронизация и Свайпы ---
-        val syncLayout = LinearLayout(service).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 5, 0, 5) }
-        syncLayout.addView(TextView(service).apply { text = "Одноврем. с Метками (через запятую): "; setTextColor(Color.WHITE) })
-        val syncEdit = EditText(service).apply {
-            inputType = InputType.TYPE_CLASS_TEXT
-            setText(node.syncWithNodeIds)
-            hint = "(Нет)"
-            setHintTextColor(Color.parseColor("#AAAAAA"))
-            setTextColor(Color.WHITE)
-            layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT)
-        }
-        syncLayout.addView(syncEdit)
-
-        val swipeLayout = LinearLayout(service).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 10, 0, 10); gravity = Gravity.CENTER_VERTICAL }
-        val (holdDurRow, getHoldDurRowMs) = createTimeInputRow("Длит. зажатия (в фоне):", node.holdDurationMs)
-        val holdHintTv = TextView(service).apply {
-            text = "💡 Метка зажимает экран на указанное время, а макрос сразу продолжает выполнять следующие шаги"
-            setTextColor(Color.parseColor("#80CBC4"))
-            setScaledTextSize(11f)
-            setPadding(0, 0, 0, dpToPx(6))
-            visibility = if (node.isHold && !node.isSwipe) View.VISIBLE else View.GONE
-        }
-        holdDurRow.visibility = if (node.isHold && !node.isSwipe) View.VISIBLE else View.GONE
-
-        lateinit var holdBtnRef: Button
-        val swipeBtn = Button(service).apply {
-            text = if (node.isSwipe) "Свайп: ВКЛ" else "Свайп: ВЫКЛ"
-            layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f).apply {
-                setMargins(0, 0, dpToPx(4), 0)
-            }
-            setOnClickListener {
-                node.isSwipe = !node.isSwipe
-                if (node.isSwipe) {
-                    node.isHold = false
-                    holdBtnRef.text = "✋ Удержание: ВЫКЛ"
-                    holdDurRow.visibility = View.GONE
-                    holdHintTv.visibility = View.GONE
-                    if (node.swipeTargetNodeId == null && node.swipePathPoints.isEmpty()) {
-                        createSwipeEndMarker(node)
-                    }
-                } else {
-                    removeSwipeEndMarker(node.id)
-                }
-                text = if (node.isSwipe) "Свайп: ВКЛ" else "Свайп: ВЫКЛ"
-                invalidateLines()
-            }
-        }
-        val holdBtn = Button(service).apply {
-            text = if (node.isHold && !node.isSwipe) "✋ Удержание: ВКЛ" else "✋ Удержание: ВЫКЛ"
-            layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f).apply {
-                setMargins(dpToPx(4), 0, 0, 0)
-            }
-            setOnClickListener {
-                node.isHold = !node.isHold
-                if (node.isHold) {
-                    node.isSwipe = false
-                    swipeBtn.text = "Свайп: ВЫКЛ"
-                    removeSwipeEndMarker(node.id)
-                }
-                text = if (node.isHold) "✋ Удержание: ВКЛ" else "✋ Удержание: ВЫКЛ"
-                holdDurRow.visibility = if (node.isHold) View.VISIBLE else View.GONE
-                holdHintTv.visibility = if (node.isHold) View.VISIBLE else View.GONE
-                invalidateLines()
-            }
-        }
-        holdBtnRef = holdBtn
-        swipeLayout.addView(swipeBtn)
-        swipeLayout.addView(holdBtn)
-        
-        val (swipeDurRow, getSwipeDurRowMs) = createTimeInputRow("Длит. свайпа:", node.swipeDurationMs)
-        
-        val swipeDeltaLayout = LinearLayout(service).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 10, 0, 0) }
-        val modeSpinnerLayout = LinearLayout(service).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        modeSpinnerLayout.addView(TextView(service).apply { text = "Режим свайпа: "; setTextColor(Color.WHITE) })
-        val modeSpinner = android.widget.Spinner(service).apply {
-            adapter = android.widget.ArrayAdapter(service, android.R.layout.simple_spinner_item, arrayOf("Вектор (Суб-метка)", "К метке (ID)", "Ломаная / Кривая (Запись)"))
-            setSelection(if (node.swipePathPoints.isNotEmpty()) 2 else if (node.swipeTargetNodeId != null) 1 else 0)
-        }
-        modeSpinnerLayout.addView(modeSpinner)
-        swipeDeltaLayout.addView(modeSpinnerLayout)
-
-        val swipeTargetEditLayout = LinearLayout(service).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 5, 0, 0); gravity = Gravity.CENTER_VERTICAL }
-        swipeTargetEditLayout.addView(TextView(service).apply { text = "ID цели: "; setTextColor(Color.WHITE) })
-        val swipeTargetEdit = EditText(service).apply {
-            inputType = InputType.TYPE_CLASS_NUMBER
-            setText(node.swipeTargetNodeId?.toString() ?: "")
-            hint = "(Введите ID)"
-            setHintTextColor(Color.parseColor("#AAAAAA"))
-            setTextColor(Color.WHITE)
-            layoutParams = LinearLayout.LayoutParams(dpToPx(100), WindowManager.LayoutParams.WRAP_CONTENT)
-        }
-        swipeTargetEditLayout.addView(swipeTargetEdit)
-        swipeDeltaLayout.addView(swipeTargetEditLayout)
-
-        val customPathLayout = LinearLayout(service).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(0, dpToPx(6), 0, dpToPx(4))
-        }
-        val customPathInfoTv = TextView(service).apply {
-            text = if (node.swipePathPoints.size >= 2) {
-                "✅ Записана траектория: ${node.swipePathPoints.size} точек (${node.swipeDurationMs} мс)"
-            } else {
-                "Траектория не записана (нажмите кнопку ниже и проведите пальцем по экрану)"
-            }
-            setTextColor(if (node.swipePathPoints.size >= 2) Color.parseColor("#69F0AE") else Color.parseColor("#B0BEC5"))
-            setScaledTextSize(11f)
-            setPadding(0, 0, 0, dpToPx(4))
-        }
-        val recordSwipePathBtn = Button(service).apply {
-            text = "✍️ Нарисовать сложный свайп на экране"
-            setBackgroundColor(Color.parseColor("#00838F"))
-            setTextColor(Color.WHITE)
-            setOnClickListener {
-                modMenu?.visibility = View.GONE
-                service.startSingleSwipeRecording(node) {
-                    modMenu?.visibility = View.VISIBLE
-                    showEditNodeMenu(node)
-                }
-            }
-        }
-        customPathLayout.addView(customPathInfoTv)
-        customPathLayout.addView(recordSwipePathBtn)
-        swipeDeltaLayout.addView(customPathLayout)
-        
-        modeSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(p0: android.widget.AdapterView<*>?, p1: View?, pos: Int, p3: Long) {
-                swipeTargetEditLayout.visibility = if (pos == 1) View.VISIBLE else View.GONE
-                customPathLayout.visibility = if (pos == 2) View.VISIBLE else View.GONE
-                
-                if (pos == 0) {
-                    // Vector
-                    node.swipeTargetNodeId = null
-                    node.swipePathPoints = emptyList()
-                    if (node.isSwipe) createSwipeEndMarker(node)
-                } else if (pos == 1) {
-                    // To ID
-                    removeSwipeEndMarker(node.id)
-                    node.swipePathPoints = emptyList()
-                } else if (pos == 2) {
-                    // Gesture (keep swipe end marker at end of path)
-                    node.swipeTargetNodeId = null
-                    if (node.isSwipe && node.swipePathPoints.isNotEmpty()) {
-                        createSwipeEndMarker(node)
-                    }
-                }
-                invalidateLines()
-            }
-            override fun onNothingSelected(p0: android.widget.AdapterView<*>?) {}
-        }
-        
-        val hasSwipeChanges = node.syncWithNodeIds.isNotEmpty() || node.isSwipe || node.isHold || node.swipeTargetNodeId != null || node.swipeDurationMs != 500L
-        val syncSwipeSection = addSection("⚙️ Жест (Свайп / Удержание / Синхронизация)", hasSwipeChanges) { body ->
-            body.addView(syncLayout)
-            body.addView(swipeLayout)
-            body.addView(holdHintTv)
-            body.addView(holdDurRow)
-            body.addView(swipeDurRow)
-            body.addView(swipeDeltaLayout)
         }
 
         if (node.type == NodeType.CHECK_COLOR || node.type == NodeType.MACRO || node.type == NodeType.MANAGER) {
@@ -3647,6 +4051,8 @@ class UIManager(private val service: AutoClickService) {
             swipeDurRow.visibility = View.GONE
             swipeDeltaLayout.visibility = View.GONE
             clickDurRow.visibility = View.GONE
+            antiDetectSection.visibility = View.GONE
+            syncSwipeSection.visibility = View.GONE
         }
         if (node.type == NodeType.MANAGER) {
             timingsSection.visibility = View.GONE
@@ -3657,61 +4063,64 @@ class UIManager(private val service: AutoClickService) {
             syncSwipeSection.visibility = View.GONE
         }
 
+        val saveAndExit = {
+            node.clickDurationMs = getClickDurRowMs()
+            node.holdDurationMs = getHoldDurRowMs()
+            node.delayAfterMs = getDelayRowMs()
+            node.randomizeDelayMs = getRandomDelayRowMs()
+            node.randomizeRadius = randomRadiusEdit.text.toString().toIntOrNull() ?: 0
+            node.repetitions = repetitionsEdit.text.toString().toIntOrNull() ?: 1
+            node.nextNodeIdOnSuccess = nextSuccessEdit.text.toString().toIntOrNull()
+            node.nextNodeIdOnFail = nextFailEdit.text.toString().toIntOrNull()
+            val limit = cycleLimitEdit.text.toString().toIntOrNull()
+            node.maxCheckCycles = if (limit != null && limit > 0) limit else null
+            
+            if (node.triggerMode == 0 && node.compareToNodeId != null) {
+                node.compareToNodeId = linkedEdit.text.toString().toIntOrNull()
+                node.linkedConditionNodeId = null
+            } else {
+                node.linkedConditionNodeId = linkedEdit.text.toString().toIntOrNull()
+                node.compareToNodeId = null
+            }
+            
+            node.colorTolerance = colorTolEdit.text.toString().toIntOrNull() ?: 15
+            node.dynamicColorLookbackMs = getDynamicLookbackMs()
+            node.imageThreshold = imgThresholdEdit.text.toString().toFloatOrNull() ?: 80f
+            node.searchRadius = searchRadiusEdit.text.toString().toIntOrNull() ?: 0
+            node.checkResolutionScale = (resolutionScaleBar.progress + 10) / 100f
+            node.imageFullScreenSearch = imageFullScreenSearchCheck.isChecked
+            node.imageClickFoundCenter = imageClickFoundCenterCheck.isChecked
+            node.targetText = textTargetEdit.text.toString().takeIf { it.isNotEmpty() }
+            node.targetLanguage = if (textLangSpinner.selectedItemPosition == 1) "eng" else if (textLangSpinner.selectedItemPosition == 2) "rus+eng" else "rus"
+            node.ocrFullScreenClick = ocrFullscreenCheck.isChecked
+            node.ocrOperator = arrayOf("==", "!=", ">", "<", ">=", "<=")[smartOcrOpSpinner.selectedItemPosition]
+            if (ocrCompareTargetSpinner.selectedItemPosition > 0) {
+                node.ocrCompareToNodeId = availableOcrNodes[ocrCompareTargetSpinner.selectedItemPosition - 1].id
+            } else {
+                node.ocrCompareToNodeId = null
+            }
+            node.ocrTargetValue = smartOcrValEdit.text.toString().toDoubleOrNull() ?: 0.0
+            node.ocrCustomSuffixes = smartOcrSufEdit.text.toString()
+            node.syncWithNodeIds = syncEdit.text.toString().filter { it.isDigit() || it == ',' }
+            node.swipeDurationMs = getSwipeDurRowMs()
+            node.swipeTargetNodeId = swipeTargetEdit.text.toString().toIntOrNull()
+            invalidateLines()
+            service.autoSave()
+            showMainMenu()
+        }
+
+        backQuickBtn.setOnClickListener { saveAndExit() }
+
         // --- SAVE BUTTON ---
         val saveBtn = Button(service).apply {
-            text = " СОХРАНИТЬ И НАЗАД "
-            setBackgroundColor(Color.parseColor("#4CAF50"))
-            setTextColor(Color.WHITE)
-            setOnClickListener {
-                node.clickDurationMs = getClickDurRowMs()
-                node.holdDurationMs = getHoldDurRowMs()
-                node.delayAfterMs = getDelayRowMs()
-                node.randomizeDelayMs = getRandomDelayRowMs()
-                node.randomizeRadius = randomRadiusEdit.text.toString().toIntOrNull() ?: 0
-                node.repetitions = repetitionsEdit.text.toString().toIntOrNull() ?: 1
-                node.nextNodeIdOnSuccess = nextSuccessEdit.text.toString().toIntOrNull()
-                node.nextNodeIdOnFail = nextFailEdit.text.toString().toIntOrNull()
-                val limit = cycleLimitEdit.text.toString().toIntOrNull()
-                node.maxCheckCycles = if (limit != null && limit > 0) limit else null
-                
-                if (node.triggerMode == 0 && node.compareToNodeId != null) {
-                    node.compareToNodeId = linkedEdit.text.toString().toIntOrNull()
-                    node.linkedConditionNodeId = null
-                } else {
-                    node.linkedConditionNodeId = linkedEdit.text.toString().toIntOrNull()
-                    node.compareToNodeId = null
-                }
-                
-                node.colorTolerance = colorTolEdit.text.toString().toIntOrNull() ?: 15
-                node.dynamicColorLookbackMs = getDynamicLookbackMs()
-                node.imageThreshold = imgThresholdEdit.text.toString().toFloatOrNull() ?: 80f
-                node.searchRadius = searchRadiusEdit.text.toString().toIntOrNull() ?: 0
-                node.checkResolutionScale = (resolutionScaleBar.progress + 10) / 100f
-                node.imageFullScreenSearch = imageFullScreenSearchCheck.isChecked
-                node.imageClickFoundCenter = imageClickFoundCenterCheck.isChecked
-                node.targetText = textTargetEdit.text.toString().takeIf { it.isNotEmpty() }
-                node.targetLanguage = if (textLangSpinner.selectedItemPosition == 1) "eng" else if (textLangSpinner.selectedItemPosition == 2) "rus+eng" else "rus"
-                node.ocrFullScreenClick = ocrFullscreenCheck.isChecked
-                node.ocrOperator = arrayOf("==", "!=", ">", "<", ">=", "<=")[smartOcrOpSpinner.selectedItemPosition]
-                if (ocrCompareTargetSpinner.selectedItemPosition > 0) {
-                    node.ocrCompareToNodeId = availableOcrNodes[ocrCompareTargetSpinner.selectedItemPosition - 1].id
-                } else {
-                    node.ocrCompareToNodeId = null
-                }
-                node.ocrTargetValue = smartOcrValEdit.text.toString().toDoubleOrNull() ?: 0.0
-                node.ocrCustomSuffixes = smartOcrSufEdit.text.toString()
-                node.syncWithNodeIds = syncEdit.text.toString().filter { it.isDigit() || it == ',' }
-                node.swipeDurationMs = getSwipeDurRowMs()
-                node.swipeTargetNodeId = swipeTargetEdit.text.toString().toIntOrNull()
-                invalidateLines()
-                service.autoSave()
-                showMainMenu()
+            text = "✓ Сохранить и вернуться к списку"
+            stylePillButton(this, "#00C853", null, 10, 13.5f)
+            setTypeface(null, Typeface.BOLD)
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dpToPx(42)).apply {
+                setMargins(0, dpToPx(10), 0, dpToPx(4))
             }
+            setOnClickListener { saveAndExit() }
         }
-        
-        val margins = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT)
-        margins.setMargins(0, 20, 0, 0)
-        saveBtn.layoutParams = margins
         content.addView(saveBtn)
 
         layout.addView(content)

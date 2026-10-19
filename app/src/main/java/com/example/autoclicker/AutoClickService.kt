@@ -263,8 +263,17 @@ class AutoClickService : AccessibilityService() {
     val activeThreads = java.util.concurrent.CopyOnWriteArrayList<ExecutionThread>()
     
     // Gesture Queue & Background Holds
-    private val gestureQueue = java.util.concurrent.ConcurrentLinkedDeque<android.accessibilityservice.GestureDescription>()
+    data class QueuedGesture(
+        val gesture: android.accessibilityservice.GestureDescription,
+        val durationMs: Long,
+        val isSwipe: Boolean,
+        val swipeNodeIds: List<Int> = emptyList()
+    )
+    private val gestureQueue = java.util.concurrent.ConcurrentLinkedDeque<QueuedGesture>()
+    private val activeSwipeNodeEndMs = java.util.concurrent.ConcurrentHashMap<Int, Long>()
     private var isDispatchingGesture = false
+    private var currentGestureEndTimeMs = 0L
+    private var currentGestureIsLong = false
     private var lastGestureDispatchTimeNs = 0L
     private val processGestureRunnable = Runnable { processGestureQueue() }
 
@@ -345,8 +354,10 @@ class AutoClickService : AccessibilityService() {
     private fun processGestureQueue() {
         if (!isPlaying) {
             gestureQueue.clear()
+            activeSwipeNodeEndMs.clear()
             activeHolds.clear()
             isHoldSustaining = false
+            currentGestureIsLong = false
             return
         }
         if (gestureQueue.isEmpty()) {
@@ -355,6 +366,15 @@ class AutoClickService : AccessibilityService() {
             if (activeHolds.isNotEmpty() && !isDispatchingGesture) {
                 sustainActiveHolds()
             }
+            return
+        }
+
+        // Do not interrupt an in-progress swipe or long gesture; wait for onCompleted
+        val nowMs = System.currentTimeMillis()
+        if (isDispatchingGesture && !isHoldSustaining && currentGestureIsLong && nowMs < currentGestureEndTimeMs + 40L) {
+            val waitMs = (currentGestureEndTimeMs - nowMs + 10L).coerceAtLeast(5L)
+            handler.removeCallbacks(processGestureRunnable)
+            handler.postDelayed(processGestureRunnable, waitMs)
             return
         }
         
@@ -374,20 +394,31 @@ class AutoClickService : AccessibilityService() {
             return
         }
         
-        val gesture = gestureQueue.pollFirst() ?: return
+        val queued = gestureQueue.pollFirst() ?: return
+        val gesture = queued.gesture
         lastGestureDispatchTimeNs = System.nanoTime()
+        val dispatchStartMs = System.currentTimeMillis()
         
         isDispatchingGesture = true
         isHoldSustaining = false
+        currentGestureIsLong = queued.isSwipe || queued.durationMs > 15L
+        currentGestureEndTimeMs = dispatchStartMs + queued.durationMs
+        for (id in queued.swipeNodeIds) {
+            activeSwipeNodeEndMs[id] = currentGestureEndTimeMs
+        }
         val success = dispatchGesture(gesture, object : android.accessibilityservice.AccessibilityService.GestureResultCallback() {
             override fun onCompleted(gestureDescription: android.accessibilityservice.GestureDescription?) {
                 isDispatchingGesture = false
+                currentGestureIsLong = false
+                for (id in queued.swipeNodeIds) {
+                    activeSwipeNodeEndMs.remove(id)
+                }
                 if (isPlaying) {
                     if (!gestureQueue.isEmpty()) {
                         processGestureQueue()
                     } else {
-                        val nowMs = System.currentTimeMillis()
-                        activeHolds.removeAll { it.endTimeMs <= nowMs + 15L }
+                        val checkNow = System.currentTimeMillis()
+                        activeHolds.removeAll { it.endTimeMs <= checkNow + 15L }
                         if (activeHolds.isNotEmpty()) {
                             sustainActiveHolds()
                         }
@@ -396,12 +427,16 @@ class AutoClickService : AccessibilityService() {
             }
             override fun onCancelled(gestureDescription: android.accessibilityservice.GestureDescription?) {
                 isDispatchingGesture = false
+                currentGestureIsLong = false
+                for (id in queued.swipeNodeIds) {
+                    activeSwipeNodeEndMs.remove(id)
+                }
                 if (isPlaying) {
                     if (!gestureQueue.isEmpty()) {
                         processGestureQueue()
                     } else {
-                        val nowMs = System.currentTimeMillis()
-                        activeHolds.removeAll { it.endTimeMs <= nowMs + 15L }
+                        val checkNow = System.currentTimeMillis()
+                        activeHolds.removeAll { it.endTimeMs <= checkNow + 15L }
                         if (activeHolds.isNotEmpty()) {
                             sustainActiveHolds()
                         }
@@ -412,17 +447,22 @@ class AutoClickService : AccessibilityService() {
         
         if (!success) {
             isDispatchingGesture = false
-            gestureQueue.addFirst(gesture)
+            currentGestureIsLong = false
+            gestureQueue.addFirst(queued)
             handler.removeCallbacks(processGestureRunnable)
-            handler.post(processGestureRunnable)
+            handler.postDelayed(processGestureRunnable, 5L)
         } else {
             if (!gestureQueue.isEmpty() && isPlaying) {
                 handler.removeCallbacks(processGestureRunnable)
-                val remainingNs = minIntervalNs - (System.nanoTime() - lastGestureDispatchTimeNs)
-                if (remainingNs <= 0L || remainingNs < 1_500_000L) {
-                    handler.post(processGestureRunnable)
+                if (currentGestureIsLong) {
+                    handler.postDelayed(processGestureRunnable, queued.durationMs + 30L)
                 } else {
-                    handler.postDelayed(processGestureRunnable, remainingNs / 1_000_000L)
+                    val remainingNs = minIntervalNs - (System.nanoTime() - lastGestureDispatchTimeNs)
+                    if (remainingNs <= 0L || remainingNs < 1_500_000L) {
+                        handler.post(processGestureRunnable)
+                    } else {
+                        handler.postDelayed(processGestureRunnable, remainingNs / 1_000_000L)
+                    }
                 }
             }
         }
@@ -582,8 +622,10 @@ class AutoClickService : AccessibilityService() {
         if (isPlaying) {
             isPlaying = false
             gestureQueue.clear()
+            activeSwipeNodeEndMs.clear()
             activeHolds.clear()
             isHoldSustaining = false
+            currentGestureIsLong = false
             if (::uiManager.isInitialized) uiManager.logDebug("--- СТОП ---")
             restoreTouchabilitySafe()
         } else {
@@ -593,7 +635,9 @@ class AutoClickService : AccessibilityService() {
             playStartTimeMs = System.currentTimeMillis()
             activeThreads.clear()
             isDispatchingGesture = false
+            currentGestureIsLong = false
             gestureQueue.clear()
+            activeSwipeNodeEndMs.clear()
             activeHolds.clear()
             isHoldSustaining = false
             for (n in nodes) {
@@ -788,6 +832,14 @@ class AutoClickService : AccessibilityService() {
             return
         }
 
+        if (node.type == NodeType.CLICK && node.isSwipe) {
+            val ongoingRem = (activeSwipeNodeEndMs[node.id] ?: 0L) - System.currentTimeMillis()
+            if (ongoingRem > 5L || gestureQueue.any { node.id in it.swipeNodeIds }) {
+                handler.postDelayed({ executeThread(thread) }, ongoingRem.coerceAtLeast(10L))
+                return
+            }
+        }
+
         if (activeThreads.firstOrNull()?.threadId == thread.threadId && (!allowExtremeSpeed || thread.currentRepetition == 0)) {
             uiManager.updateNodeScreenPosition(node)
         }
@@ -802,6 +854,7 @@ class AutoClickService : AccessibilityService() {
                 return@checkConditionForNode
             }
             
+            var actionDurationMs = 0L
             if (isMatch) {
                 thread.currentCheckCycle = 0
                 if (node.type == NodeType.CLICK) {
@@ -825,13 +878,14 @@ class AutoClickService : AccessibilityService() {
                         else -> "Клик"
                     }
                     if (::uiManager.isInitialized) uiManager.logDebug("Поток ${thread.threadId} Шаг ${node.id}: $actionLabel${if (node.triggerMode == 1 && node.imageClickFoundCenter && node.lastFoundCenterX != null) " (в центр фрагмента ${node.lastFoundCenterX},${node.lastFoundCenterY})" else ""}")
-                    performGestureForNodes(activeNodes)
+                    actionDurationMs = performGestureForNodes(activeNodes)
                 } else if (node.triggerMode == 1 && node.imageClickFoundCenter && node.lastFoundCenterX != null && node.lastFoundCenterY != null) {
                     val cx = node.lastFoundCenterX!!.toFloat()
                     val cy = node.lastFoundCenterY!!.toFloat()
                     val dur = Limits.getClickDuration(allowExtremeSpeed, node.clickDurationMs)
                     if (::uiManager.isInitialized) uiManager.logDebug("Поток ${thread.threadId} Шаг ${node.id}: Клик в центр найденного фрагмента (${cx.toInt()}, ${cy.toInt()})")
                     performGlobalClick(cx, cy, dur)
+                    actionDurationMs = dur
                 } else if (node.triggerMode == 2 && node.ocrFullScreenClick) {
                     if (::uiManager.isInitialized) uiManager.logDebug("Поток ${thread.threadId} Шаг ${node.id}: OCR Клик выполнен")
                 } else if (node.type == NodeType.MANAGER) {
@@ -909,10 +963,16 @@ class AutoClickService : AccessibilityService() {
 
             val randomDelay = if (node.randomizeDelayMs > 0) (0..node.randomizeDelayMs).random() else 0L
             val requestedDelay = Math.max(0L, node.delayAfterMs + randomDelay)
-            val finalDelay = if (!isMatch && thread.currentNodeId == node.id) {
+            val baseDelay = if (!isMatch && thread.currentNodeId == node.id) {
                 Limits.getCheckDelay(allowExtremeSpeed, node.triggerMode == 1 || node.triggerMode == 2, requestedDelay)
             } else {
                 Limits.getStepDelay(allowExtremeSpeed, requestedDelay)
+            }
+            // Wait for swipe / long gesture completion before starting the post-step pause
+            val finalDelay = if (isMatch && (node.isSwipe || actionDurationMs > 15L)) {
+                actionDurationMs + baseDelay
+            } else {
+                baseDelay
             }
 
             if (node.type == NodeType.CLICK && finalDelay <= Limits.MIN_STEP_DELAY) {
@@ -943,8 +1003,10 @@ class AutoClickService : AccessibilityService() {
         if (activeThreads.all { !it.isActive }) {
             isPlaying = false
             gestureQueue.clear()
+            activeSwipeNodeEndMs.clear()
             activeHolds.clear()
             isHoldSustaining = false
+            currentGestureIsLong = false
             restoreTouchabilitySafe()
             uiManager.updateMenu()
         }
@@ -1066,21 +1128,35 @@ class AutoClickService : AccessibilityService() {
         return Pair(GestureDescription.StrokeDescription(path, 0, duration), duration)
     }
 
-    private fun performGestureForNodes(activeNodes: List<TargetNode>) {
+    private fun performGestureForNodes(activeNodes: List<TargetNode>): Long {
         val nowMs = System.currentTimeMillis()
         activeHolds.removeAll { it.endTimeMs <= nowMs + 15L }
         val maxStrokes = GestureDescription.getMaxStrokeCount()
+        var maxGestureDur = 0L
 
         if (enableMultitouch) {
             val builder = GestureDescription.Builder()
             var strokeCount = 0
             var maxNormalDur = 1L
+            var hasSwipe = false
+            val swipeIds = mutableListOf<Int>()
             for (node in activeNodes) {
                 if (strokeCount >= maxStrokes) break
+                if (node.isSwipe) {
+                    val ongoingRem = (activeSwipeNodeEndMs[node.id] ?: 0L) - nowMs
+                    if (ongoingRem > 5L || gestureQueue.any { node.id in it.swipeNodeIds }) {
+                        if (ongoingRem > maxGestureDur) maxGestureDur = ongoingRem
+                        continue
+                    }
+                }
                 val (stroke, dur) = buildNodeStroke(node)
                 if (stroke != null) {
                     builder.addStroke(stroke)
                     if (dur > maxNormalDur) maxNormalDur = dur
+                    if (node.isSwipe) {
+                        hasSwipe = true
+                        swipeIds.add(node.id)
+                    }
                     strokeCount++
                 }
             }
@@ -1097,10 +1173,21 @@ class AutoClickService : AccessibilityService() {
                         strokeCount++
                     }
                 }
-                gestureQueue.add(builder.build())
+                for (id in swipeIds) {
+                    activeSwipeNodeEndMs[id] = nowMs + maxNormalDur
+                }
+                gestureQueue.add(QueuedGesture(builder.build(), maxNormalDur, hasSwipe, swipeIds))
+                maxGestureDur = maxNormalDur
             }
         } else {
             for (node in activeNodes) {
+                if (node.isSwipe) {
+                    val ongoingRem = (activeSwipeNodeEndMs[node.id] ?: 0L) - nowMs
+                    if (ongoingRem > 5L || gestureQueue.any { node.id in it.swipeNodeIds }) {
+                        if (ongoingRem > maxGestureDur) maxGestureDur = ongoingRem
+                        continue
+                    }
+                }
                 val (stroke, dur) = buildNodeStroke(node)
                 if (stroke != null) {
                     val builder = GestureDescription.Builder()
@@ -1118,7 +1205,12 @@ class AutoClickService : AccessibilityService() {
                             strokeCount++
                         }
                     }
-                    gestureQueue.add(builder.build())
+                    val swipeIds = if (node.isSwipe) listOf(node.id) else emptyList()
+                    if (node.isSwipe) {
+                        activeSwipeNodeEndMs[node.id] = nowMs + dur
+                    }
+                    gestureQueue.add(QueuedGesture(builder.build(), dur, node.isSwipe, swipeIds))
+                    if (dur > maxGestureDur) maxGestureDur = dur
                 }
             }
         }
@@ -1130,6 +1222,7 @@ class AutoClickService : AccessibilityService() {
         } else {
             processGestureQueue()
         }
+        return maxGestureDur
     }
 
     fun captureColorAt(x: Int, y: Int, callback: (Int?) -> Unit) {
@@ -2506,9 +2599,44 @@ class AutoClickService : AccessibilityService() {
         }
     }
 
+    fun exportAllProfilesJson(): String {
+        val prefs = getSharedPreferences("AutoClickerProfiles", android.content.Context.MODE_PRIVATE)
+        val root = org.json.JSONObject()
+        root.put("backupType", "UpwellClickFullBackup")
+        root.put("version", 1)
+        val profilesObj = org.json.JSONObject()
+        for ((k, v) in prefs.all) {
+            if (v is String && !k.startsWith("AutoSave /")) {
+                profilesObj.put(k, v)
+            }
+        }
+        root.put("profiles", profilesObj)
+        return root.toString()
+    }
+
     fun loadProfileFromJson(jsonText: String, append: Boolean = false) {
         val tokener = org.json.JSONTokener(jsonText)
         val root = tokener.nextValue()
+        if (root is org.json.JSONObject && root.optString("backupType") == "UpwellClickFullBackup") {
+            val profilesObj = root.optJSONObject("profiles")
+            if (profilesObj != null) {
+                val prefs = getSharedPreferences("AutoClickerProfiles", android.content.Context.MODE_PRIVATE)
+                val edit = prefs.edit()
+                var count = 0
+                val keys = profilesObj.keys()
+                while (keys.hasNext()) {
+                    val k = keys.next()
+                    val v = profilesObj.optString(k)
+                    if (v.isNotEmpty()) {
+                        edit.putString(k, v)
+                        count++
+                    }
+                }
+                edit.apply()
+                android.widget.Toast.makeText(this, "Восстановлено профилей из бэкапа: $count", android.widget.Toast.LENGTH_LONG).show()
+            }
+            return
+        }
         
         var arr: org.json.JSONArray
         var scaleX = 1f
@@ -2634,10 +2762,13 @@ class AutoClickService : AccessibilityService() {
     }
 
     private fun performGlobalClick(x: Float, y: Float, duration: Long) {
-        val path = android.graphics.Path().apply { moveTo(x, y) }
+        val path = android.graphics.Path().apply {
+            moveTo(x, y)
+            lineTo(x + 1f, y + 1f)
+        }
         val stroke = android.accessibilityservice.GestureDescription.StrokeDescription(path, 0, duration)
         val gesture = android.accessibilityservice.GestureDescription.Builder().addStroke(stroke).build()
-        gestureQueue.offer(gesture)
+        gestureQueue.offer(QueuedGesture(gesture, duration, false))
         processGestureQueue()
     }
 }

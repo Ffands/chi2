@@ -53,7 +53,7 @@ class MainActivity : Activity() {
                 startActivityForResult(sfIntent, REQ_IMPORT)
             }
             "ACTION_IMPORT_IMAGE" -> {
-                pendingImageNodeId = intent.getIntExtra("node_id", -1)
+                pendingImageNodeId = intent.getIntExtra("node_id", intent.getIntExtra("NODE_ID", -1))
                 val imgIntent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
                     addCategory(Intent.CATEGORY_OPENABLE)
                     type = "image/*"
@@ -177,6 +177,46 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+
+    private fun roundedBg(colorHex: String, strokeHex: String? = null, radiusDp: Int = 14): android.graphics.drawable.GradientDrawable {
+        return android.graphics.drawable.GradientDrawable().apply {
+            setColor(Color.parseColor(colorHex))
+            cornerRadius = dp(radiusDp).toFloat()
+            if (strokeHex != null) {
+                setStroke(dp(1), Color.parseColor(strokeHex))
+            }
+        }
+    }
+
+    private lateinit var statusCardView: LinearLayout
+    private lateinit var statusBadgeTv: TextView
+    private lateinit var statusSubTv: TextView
+    private lateinit var startUiBtnView: Button
+
+    override fun onResume() {
+        super.onResume()
+        refreshServiceStatusUI()
+    }
+
+    private fun refreshServiceStatusUI() {
+        if (!::statusCardView.isInitialized) return
+        val active = AutoClickService.instance != null
+        if (active) {
+            statusCardView.background = roundedBg("#13281C", "#00E676", 16)
+            statusBadgeTv.text = "● СЛУЖБА АКТИВНА"
+            statusBadgeTv.setTextColor(Color.parseColor("#00E676"))
+            statusSubTv.text = "Автокликер готов к работе. Нажмите «Показать панель HUD», если она скрыта."
+            startUiBtnView.visibility = View.VISIBLE
+        } else {
+            statusCardView.background = roundedBg("#2B1619", "#FF5252", 16)
+            statusBadgeTv.text = "● СЛУЖБА ОТКЛЮЧЕНА"
+            statusBadgeTv.setTextColor(Color.parseColor("#FF5252"))
+            statusSubTv.text = "Включите «UpwellClick» в разделе Специальных возможностей Android."
+            startUiBtnView.visibility = View.GONE
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
@@ -187,243 +227,224 @@ class MainActivity : Activity() {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.MATCH_PARENT
             )
-            setBackgroundColor(Color.parseColor("#121212"))
+            setBackgroundColor(Color.parseColor("#0F131A"))
         }
         
         val contentLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(60, 80, 60, 80)
+            setPadding(dp(18), dp(24), dp(18), dp(32))
         }
 
+        // Header
         val title = TextView(this).apply {
-            text = "UpwellClick\nУльтимативный Автокликер"
-            textSize = 28f
+            text = "UpwellClick"
+            textSize = 26f
             typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER
-            setTextColor(Color.parseColor("#4CAF50"))
-            setPadding(0, 0, 0, 60)
+            setTextColor(Color.WHITE)
+        }
+        val subtitle = TextView(this).apply {
+            text = "Умный автокликер • Триггеры • OCR • Запись жестов"
+            textSize = 13f
+            gravity = Gravity.CENTER
+            setTextColor(Color.parseColor("#90A4AE"))
+            setPadding(0, dp(4), 0, dp(20))
         }
         contentLayout.addView(title)
+        contentLayout.addView(subtitle)
 
-        // Card 1: How to enable
-        val card1 = createCard(
-            "Как включить автокликер",
-            "Для работы программы необходимо разрешение на симуляцию нажатий.\n\n" +
-            "1. Нажмите кнопку ниже.\n" +
-            "2. Найдите 'UpwellClick' (может быть в разделе 'Установленные приложения').\n" +
-            "3. Переведите переключатель в положение ВКЛ.",
-            Color.parseColor("#1E1E1E")
-        )
-        contentLayout.addView(card1)
-
-        // Card 2: Android 13+ constraints
-        val card2 = createCard(
-            "⚠️ ВАЖНО: Android 13+ (Ограниченные настройки)",
-            "Если система пишет «Ограниченные настройки» и не дает нажать на тумблер:\n\n" +
-            "1. Нажмите кнопку ниже «Настройки приложения».\n" +
-            "2. Нажмите на 3 точки в правом верхнем углу (или полистайте вниз) и выберите «Разрешить ограниченные настройки».\n" +
-            "3. Подтвердите паролем или отпечатком.\n" +
-            "4. Теперь общие настройки автокликера будут разблокированы.",
-            Color.parseColor("#2C1A1A") // subtle dark red
-        )
-        contentLayout.addView(card2)
-
-        val appSettingsBtn = Button(this).apply {
-            text = "ОТКРЫТЬ НАСТРОЙКИ ПРИЛОЖЕНИЯ (Android 13+)"
-            setBackgroundColor(Color.parseColor("#FF9800"))
+        // Status Card at the very top
+        statusCardView = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(16), dp(18), dp(16))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(0, 0, 0, dp(16)) }
+        }
+        statusBadgeTv = TextView(this).apply {
+            textSize = 17f
+            typeface = Typeface.DEFAULT_BOLD
+        }
+        statusSubTv = TextView(this).apply {
+            textSize = 13f
+            setTextColor(Color.parseColor("#CFD8DC"))
+            setPadding(0, dp(6), 0, dp(14))
+        }
+        val actionBtnsRow = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        val settingsBtn = Button(this).apply {
+            text = "⚙ Включить / Настроить в системе"
             setTextColor(Color.WHITE)
             textSize = 14f
-            setPadding(0, 30, 0, 30)
-            val params = LinearLayout.LayoutParams(
+            typeface = Typeface.DEFAULT_BOLD
+            background = roundedBg("#2962FF", null, 12)
+            setPadding(dp(12), dp(12), dp(12), dp(12))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(0, 0, 0, dp(8)) }
+            setOnClickListener {
+                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            }
+        }
+        startUiBtnView = Button(this).apply {
+            text = "🚀 Показать панель HUD на экране"
+            setTextColor(Color.WHITE)
+            textSize = 14f
+            typeface = Typeface.DEFAULT_BOLD
+            background = roundedBg("#00C853", null, 12)
+            setPadding(dp(12), dp(12), dp(12), dp(12))
+            visibility = View.GONE
+            layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             )
-            params.setMargins(0, 0, 0, 40)
-            layoutParams = params
+            setOnClickListener {
+                if (AutoClickService.instance != null) {
+                    val sIntent = Intent(this@MainActivity, AutoClickService::class.java)
+                    sIntent.action = "SHOW_UI"
+                    startService(sIntent)
+                    finish()
+                }
+            }
+        }
+        actionBtnsRow.addView(settingsBtn)
+        actionBtnsRow.addView(startUiBtnView)
+        statusCardView.addView(statusBadgeTv)
+        statusCardView.addView(statusSubTv)
+        statusCardView.addView(actionBtnsRow)
+        contentLayout.addView(statusCardView)
+
+        // Mode Selection Card
+        val modeLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = roundedBg("#171C26", "#263238", 16)
+            setPadding(dp(18), dp(16), dp(18), dp(16))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(0, 0, 0, dp(16)) }
+        }
+        modeLayout.addView(TextView(this).apply {
+            text = "🎛 Выберите режим работы"
+            textSize = 16f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.WHITE)
+            setPadding(0, 0, 0, dp(4))
+        })
+        modeLayout.addView(TextView(this).apply {
+            text = "Режим можно переключать в любой момент прямо из меню кликера:"
+            textSize = 12f
+            setTextColor(Color.parseColor("#90A4AE"))
+            setPadding(0, 0, 0, dp(10))
+        })
+        
+        val modeGroup = RadioGroup(this).apply {
+            orientation = RadioGroup.VERTICAL
+        }
+        val modes = listOf(
+            "SEQUENTIAL" to "🎯 Простой (Цепочка кликов и свайпов по очереди)",
+            "ADVANCED" to "🧠 Умный (Поиск цвета, картинок, OCR текста и логика)",
+            "RECORD" to "🎥 Запись жестов (Повторяет ваши нажатия вживую)"
+        )
+        val prefs = getSharedPreferences("AutoClickerSettings", Context.MODE_PRIVATE)
+        val savedModeRaw = prefs.getString("AppMode", "ADVANCED") ?: "ADVANCED"
+        val currentMode = if (savedModeRaw == "SINGLE") "SEQUENTIAL" else savedModeRaw
+        
+        for ((modeId, modeDesc) in modes) {
+            val rb = RadioButton(this).apply {
+                text = modeDesc
+                setTextColor(Color.WHITE)
+                textSize = 14f
+                setPadding(dp(6), dp(10), dp(6), dp(10))
+                tag = modeId
+                isChecked = modeId == currentMode
+            }
+            modeGroup.addView(rb)
+        }
+        modeGroup.setOnCheckedChangeListener { group, checkedId ->
+            val rb = group.findViewById<RadioButton>(checkedId)
+            val selectedMode = rb.tag.toString()
+            prefs.edit().putString("AppMode", selectedMode).apply()
+            AutoClickService.instance?.updateAppMode(selectedMode)
+        }
+        modeLayout.addView(modeGroup)
+        contentLayout.addView(modeLayout)
+
+        // Quick 3-step onboarding card for beginners
+        val cardGuide = createCard(
+            "💡 Быстрый старт за 3 шага",
+            "1️⃣ Нажмите [➕] на плавающей панели, чтобы добавить метку на экран.\n" +
+            "2️⃣ Перетащите прицел в нужное место (нажатие по прицелу открывает его настройки: тайминги, свайп, удержание или поиск цвета/картинки).\n" +
+            "3️⃣ Нажмите [▶] для запуска! Чтобы свернуть панель в одну кнопку — нажмите [◂].",
+            Color.parseColor("#171C26")
+        )
+        contentLayout.addView(cardGuide)
+
+        // Android 13+ helper card
+        val cardAndroid13 = createCard(
+            "⚠️ Не включается тумблер на Android 13+?",
+            "Если система пишет «Ограниченные настройки»:\n" +
+            "1. Откройте «Настройки приложения» по кнопке ниже.\n" +
+            "2. Нажмите на ⋮ (три точки в углу) ➔ «Разрешить ограниченные настройки».\n" +
+            "3. Вернитесь и включите службу UpwellClick.",
+            Color.parseColor("#24181C")
+        )
+        contentLayout.addView(cardAndroid13)
+
+        val appSettingsBtn = Button(this).apply {
+            text = "🔓 Открыть настройки приложения (Android 13+)"
+            background = roundedBg("#E65100", null, 12)
+            setTextColor(Color.WHITE)
+            textSize = 13f
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(dp(12), dp(12), dp(12), dp(12))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(0, 0, 0, dp(16)) }
             setOnClickListener {
                 startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.parse("package:" + packageName)))
             }
         }
         contentLayout.addView(appSettingsBtn)
 
-        // Card 3: Brief instructions for new users
-        val card3 = createCard(
-            "📖 Как пользоваться (Справка)",
-            "Этот автокликер умеет нажимать на экран за вас!\n\n" +
-            "• Одиночные клики: Нажмите [+] для добавления метки, наведите её на нужную кнопку и нажмите [▶].\n" +
-            "• Свайпы: Добавьте две метки, зайдите в настройки (шестеренка) первой метки и укажите «Вести к метке № 2».\n" +
-            "• Продвинутый режим: Метку можно сделать Триггером (ждать цвета или текста), чтобы кликер принимал решения!\n" +
-            "• Запись: В меню переключите режим на «Запись», нажмите [REC] и прокликайте свой сценарий вручную. Кликер повторит всё точь-в-точь!\n\n" +
-            "В МЕНЮ АВТОКЛИКЕРА (шестеренка) есть отдельный раздел «Справка» со всеми деталями.",
-            Color.parseColor("#1B2A38")
-        )
-        contentLayout.addView(card3)
-        
-        val modeLayout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.parseColor("#1B2A38"))
-            setPadding(40, 40, 40, 40)
-            val params = LinearLayout.LayoutParams(
+        val bottomBtnsRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             )
-            params.setMargins(0, 0, 0, 40)
-            layoutParams = params
         }
-        val modeTitle = TextView(this).apply {
-            text = "РЕЖИМ РАБОТЫ"
-            textSize = 18f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.WHITE)
-            setPadding(0, 0, 0, 20)
-        }
-        modeLayout.addView(modeTitle)
-        
-        val modeGroup = RadioGroup(this).apply {
-            orientation = RadioGroup.VERTICAL
-        }
-        
-        val modes = listOf(
-            "SINGLE" to "Одиночный режим (1 метка)",
-            "SEQUENTIAL" to "Многоцелевой режим (Цепочка)",
-            "ADVANCED" to "Инженерный режим (Сложная логика)",
-            "RECORD" to "Запись макроса (Ручной ввод)"
-        )
-        
-        val prefs = getSharedPreferences("AutoClickerSettings", Context.MODE_PRIVATE)
-        val currentMode = prefs.getString("AppMode", "ADVANCED")
-        
-        for ((modeId, modeDesc) in modes) {
-            val rb = RadioButton(this).apply {
-                text = modeDesc
-                setTextColor(Color.WHITE)
-                textSize = 16f
-                setPadding(0, 20, 0, 20)
-                tag = modeId
-                isChecked = modeId == currentMode
-            }
-            modeGroup.addView(rb)
-        }
-        
-        modeGroup.setOnCheckedChangeListener { group, checkedId ->
-            val rb = group.findViewById<RadioButton>(checkedId)
-            val selectedMode = rb.tag.toString()
-            prefs.edit().putString("AppMode", selectedMode).apply()
-            
-            // Apply to running service if possible
-            if (AutoClickService.instance != null) {
-                AutoClickService.instance!!.updateAppMode(selectedMode)
-            }
-        }
-        
-        modeLayout.addView(modeGroup)
-        contentLayout.addView(modeLayout)
-
         val fullGuideBtn = Button(this).apply {
-            text = "📖 ПОЛНОЕ РУКОВОДСТВО"
-            setBackgroundColor(Color.parseColor("#9C27B0")) // Purple
+            text = "📖 Подробная справка"
+            background = roundedBg("#263238", "#37474F", 12)
             setTextColor(Color.WHITE)
-            textSize = 16f
-            setPadding(0, 30, 0, 30)
-            val params = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            )
-            params.setMargins(0, 0, 0, 40)
-            layoutParams = params
-            setOnClickListener {
-                showFullGuideDialog()
+            textSize = 13f
+            setPadding(dp(10), dp(12), dp(10), dp(12))
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                setMargins(0, 0, dp(6), 0)
             }
+            setOnClickListener { showFullGuideDialog() }
         }
-        contentLayout.addView(fullGuideBtn)
-
-        val statusLayout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.parseColor("#222222"))
-            setPadding(40, 40, 40, 40)
-            val params = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            )
-            params.setMargins(0, 40, 0, 40)
-            layoutParams = params
-        }
-
-        val statusText = TextView(this).apply {
-            textSize = 18f
-            typeface = Typeface.DEFAULT_BOLD
-            gravity = Gravity.CENTER
-            setTextColor(Color.WHITE)
-        }
-        statusLayout.addView(statusText)
-        contentLayout.addView(statusLayout)
-
-        val settingsBtn = Button(this).apply {
-            text = "ОТКРЫТЬ НАСТРОЙКИ"
-            setBackgroundColor(Color.parseColor("#2196F3"))
-            setTextColor(Color.WHITE)
-            textSize = 16f
-            setPadding(0, 30, 0, 30)
-            setOnClickListener {
-                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-            }
-        }
-        contentLayout.addView(settingsBtn)
-
-        val startUiBtn = Button(this).apply {
-            text = "МЕНЮ АВТОКЛИКЕРА"
-            setBackgroundColor(Color.parseColor("#4CAF50"))
-            setTextColor(Color.WHITE)
-            textSize = 16f
-            setPadding(0, 30, 0, 30)
-            visibility = View.GONE
-            val params = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            )
-            params.setMargins(0, 30, 0, 0)
-            layoutParams = params
-
-            setOnClickListener {
-                if (AutoClickService.instance != null) {
-                    val intent = Intent(this@MainActivity, AutoClickService::class.java)
-                    intent.action = "SHOW_UI"
-                    startService(intent)
-                    finish()
-                }
-            }
-        }
-        contentLayout.addView(startUiBtn)
-        
         val showTreeBtn = Button(this).apply {
-            text = "ДЕРЕВО СЦЕНАРИЯ"
-            setBackgroundColor(Color.parseColor("#9C27B0"))
+            text = "🌳 Схема сценария"
+            background = roundedBg("#263238", "#37474F", 12)
             setTextColor(Color.WHITE)
-            textSize = 16f
-            setPadding(0, 30, 0, 30)
-            val params = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            )
-            params.setMargins(0, 30, 0, 0)
-            layoutParams = params
-            setOnClickListener {
-                showScenarioTree()
+            textSize = 13f
+            setPadding(dp(10), dp(12), dp(10), dp(12))
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                setMargins(dp(6), 0, 0, 0)
             }
+            setOnClickListener { showScenarioTree() }
         }
-        contentLayout.addView(showTreeBtn)
+        bottomBtnsRow.addView(fullGuideBtn)
+        bottomBtnsRow.addView(showTreeBtn)
+        contentLayout.addView(bottomBtnsRow)
 
-        contentLayout.post {
-            if (AutoClickService.instance != null) {
-                statusText.text = "Статус: СЛУЖБА ВКЛЮЧЕНА ✔"
-                statusText.setTextColor(Color.parseColor("#4CAF50"))
-                startUiBtn.visibility = View.VISIBLE
-            } else {
-                statusText.text = "Статус: СЛУЖБА ОТКЛЮЧЕНА ❌"
-                statusText.setTextColor(Color.parseColor("#F44336"))
-                startUiBtn.visibility = View.GONE
-            }
-        }
+        refreshServiceStatusUI()
 
         scroll.addView(contentLayout)
         setContentView(scroll)
@@ -523,30 +544,34 @@ class MainActivity : Activity() {
     private fun createCard(titleText: String, bodyText: String, bgColor: Int): View {
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(bgColor)
-            setPadding(40, 40, 40, 40)
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(bgColor)
+                cornerRadius = dp(16).toFloat()
+                setStroke(dp(1), Color.parseColor("#263238"))
+            }
+            setPadding(dp(18), dp(16), dp(18), dp(16))
             val params = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             )
-            params.setMargins(0, 0, 0, 40)
+            params.setMargins(0, 0, 0, dp(16))
             layoutParams = params
         }
 
         val title = TextView(this).apply {
             text = titleText
-            textSize = 18f
+            textSize = 16f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.WHITE)
-            setPadding(0, 0, 0, 20)
+            setPadding(0, 0, 0, dp(8))
         }
         container.addView(title)
 
         val body = TextView(this).apply {
             text = bodyText
-            textSize = 15f
-            setTextColor(Color.LTGRAY)
-            setLineSpacing(0f, 1.2f)
+            textSize = 13.5f
+            setTextColor(Color.parseColor("#CFD8DC"))
+            setLineSpacing(0f, 1.25f)
         }
         container.addView(body)
 
