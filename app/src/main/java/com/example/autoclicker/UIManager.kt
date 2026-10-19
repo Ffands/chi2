@@ -137,8 +137,11 @@ class UIManager(private val service: AutoClickService) {
     var showEyeBtn = true
     var showLinesBtn = true
     var showHotbarBtn = true
+    var showTreeBtn = true
     var showSettingsBtn = true
+    var uiAccentColor: String = "#00C853"
     private lateinit var menuContentContainer: FrameLayout
+    private var fullscreenBtnRef: Button? = null
     
     fun updateFloatingControlBarCaffeine() {
         val params = floatingControlBar?.layoutParams as? WindowManager.LayoutParams ?: return
@@ -162,6 +165,12 @@ class UIManager(private val service: AutoClickService) {
     val textZoneEndViews = mutableMapOf<Int, View>()
     val textZoneEndParams = mutableMapOf<Int, WindowManager.LayoutParams>()
 
+    val compareZoneStartViews = mutableMapOf<Int, View>()
+    val compareZoneStartParams = mutableMapOf<Int, WindowManager.LayoutParams>()
+
+    val compareZoneEndViews = mutableMapOf<Int, View>()
+    val compareZoneEndParams = mutableMapOf<Int, WindowManager.LayoutParams>()
+
     val colorCompareViews = mutableMapOf<Int, View>()
     val colorCompareParams = mutableMapOf<Int, WindowManager.LayoutParams>()
 
@@ -175,15 +184,18 @@ class UIManager(private val service: AutoClickService) {
 
     fun loadUISettings() {
         val prefs = service.getSharedPreferences("AutoClickerUISettings", android.content.Context.MODE_PRIVATE)
+        val mainPrefs = service.getSharedPreferences("AutoClickerSettings", android.content.Context.MODE_PRIVATE)
         uiScale = prefs.getFloat("uiScale", 1.0f)
         uiAlpha = prefs.getFloat("uiAlpha", 0.9f)
         showEyeBtn = prefs.getBoolean("showEyeBtn", true)
         showLinesBtn = prefs.getBoolean("showLinesBtn", true)
         showHotbarBtn = prefs.getBoolean("showHotbarBtn", true)
+        showTreeBtn = prefs.getBoolean("showTreeBtn", true)
         showSettingsBtn = prefs.getBoolean("showSettingsBtn", true)
         isDebugWindowVisible = prefs.getBoolean("isDebugWindowVisible", false)
         isCaffeineEnabled = prefs.getBoolean("isCaffeineEnabled", false)
         isMenuFullscreen = prefs.getBoolean("isMenuFullscreen", false)
+        uiAccentColor = mainPrefs.getString("uiAccentColor", prefs.getString("uiAccentColor", "#00C853")) ?: "#00C853"
         service.enableMultitouch = prefs.getBoolean("enableMultitouch", false)
         service.allowExtremeSpeed = prefs.getBoolean("allowExtremeSpeed", false)
         service.cycleEndDelayMs = prefs.getLong("cycleEndDelayMs", 0L)
@@ -194,16 +206,20 @@ class UIManager(private val service: AutoClickService) {
 
     fun saveUISettings() {
         val prefs = service.getSharedPreferences("AutoClickerUISettings", android.content.Context.MODE_PRIVATE)
+        val mainPrefs = service.getSharedPreferences("AutoClickerSettings", android.content.Context.MODE_PRIVATE)
+        mainPrefs.edit().putString("uiAccentColor", uiAccentColor).apply()
         prefs.edit().apply {
             putFloat("uiScale", uiScale)
             putFloat("uiAlpha", uiAlpha)
             putBoolean("showEyeBtn", showEyeBtn)
             putBoolean("showLinesBtn", showLinesBtn)
             putBoolean("showHotbarBtn", showHotbarBtn)
+            putBoolean("showTreeBtn", showTreeBtn)
             putBoolean("showSettingsBtn", showSettingsBtn)
             putBoolean("isDebugWindowVisible", isDebugWindowVisible)
             putBoolean("isCaffeineEnabled", isCaffeineEnabled)
             putBoolean("isMenuFullscreen", isMenuFullscreen)
+            putString("uiAccentColor", uiAccentColor)
             putBoolean("enableMultitouch", service.enableMultitouch)
             putBoolean("allowExtremeSpeed", service.allowExtremeSpeed)
             putLong("cycleEndDelayMs", service.cycleEndDelayMs)
@@ -212,6 +228,17 @@ class UIManager(private val service: AutoClickService) {
             putBoolean("isHudVisible", isHudVisible)
             apply()
         }
+    }
+
+    fun applyThemeColor(colorHex: String) {
+        try {
+            Color.parseColor(colorHex)
+            uiAccentColor = colorHex
+            saveUISettings()
+            val currentTag = if (::menuContentContainer.isInitialized) menuContentContainer.getChildAt(0)?.tag as? String else null
+            recreateFloatingControlBar()
+            recreateModMenu(currentTag)
+        } catch (_: Exception) {}
     }
 
     init {
@@ -544,6 +571,8 @@ class UIManager(private val service: AutoClickService) {
                         swipeEndViews.clear()
                         textZoneStartViews.clear()
                         textZoneEndViews.clear()
+                        compareZoneStartViews.clear()
+                        compareZoneEndViews.clear()
                         colorCompareViews.clear()
                         linesOverlayView?.let { try { windowManager.removeView(it) } catch (_: Exception) {} }
                         linesOverlayView = null
@@ -672,7 +701,7 @@ class UIManager(private val service: AutoClickService) {
         val quickAddBtn = Button(service).apply {
             text = "➕"
             setTextColor(Color.WHITE)
-            styleHudButton(this, "#1E88E5", 38, 38)
+            styleHudButton(this, uiAccentColor, 38, 38)
             visibility = if (service.isPlaying || service.isRecording) View.GONE else View.VISIBLE
             setOnClickListener {
                 val metrics = service.resources.displayMetrics
@@ -717,6 +746,8 @@ class UIManager(private val service: AutoClickService) {
                     swipeEndViews[it.id]?.visibility = if (it.isVisible) View.VISIBLE else View.GONE
                     textZoneStartViews[it.id]?.visibility = if (it.isVisible) View.VISIBLE else View.GONE
                     textZoneEndViews[it.id]?.visibility = if (it.isVisible) View.VISIBLE else View.GONE
+                    compareZoneStartViews[it.id]?.visibility = if (it.isVisible) View.VISIBLE else View.GONE
+                    compareZoneEndViews[it.id]?.visibility = if (it.isVisible) View.VISIBLE else View.GONE
                     colorCompareViews[it.id]?.visibility = if (it.isVisible) View.VISIBLE else View.GONE
                 }
                 text = if (targetVis) "👁" else "🙈"
@@ -731,12 +762,12 @@ class UIManager(private val service: AutoClickService) {
         val linesToggleBtn = Button(service).apply {
             text = if (service.showLines) "🕸" else "🕸✖"
             setTextColor(Color.WHITE)
-            styleHudButton(this, if (service.showLines) "#283593" else "#23293A")
+            styleHudButton(this, if (service.showLines) uiAccentColor else "#23293A")
             visibility = if (showLinesBtn) View.VISIBLE else View.GONE
             setOnClickListener {
                 service.showLines = !service.showLines
                 text = if (service.showLines) "🕸" else "🕸✖"
-                styleHudButton(this, if (service.showLines) "#283593" else "#23293A")
+                styleHudButton(this, if (service.showLines) uiAccentColor else "#23293A")
                 linesOverlayView?.visibility = if (service.showLines) View.VISIBLE else View.INVISIBLE
                 linesOverlayView?.invalidate()
             }
@@ -765,6 +796,23 @@ class UIManager(private val service: AutoClickService) {
             }
             setOnLongClickListener {
                 showHotbarConfigDialog()
+                true
+            }
+        }
+
+        val treeHudBtn = Button(service).apply {
+            text = "🌳"
+            setTextColor(Color.WHITE)
+            styleHudButton(this, "#23293A")
+            visibility = if (showTreeBtn) View.VISIBLE else View.GONE
+            setOnClickListener {
+                if (modMenu == null || modMenu?.visibility != View.VISIBLE) {
+                    showModMenu()
+                }
+                showScenarioTreeMenu()
+            }
+            setOnLongClickListener {
+                android.widget.Toast.makeText(service, "Открыть древо сценария", android.widget.Toast.LENGTH_SHORT).show()
                 true
             }
         }
@@ -818,6 +866,7 @@ class UIManager(private val service: AutoClickService) {
                 toggleVisBtn.visibility = if (isHudMinimized || !showEyeBtn) View.GONE else View.VISIBLE
                 linesToggleBtn.visibility = if (isHudMinimized || !showLinesBtn) View.GONE else View.VISIBLE
                 hotbarToggleBtn.visibility = if (isHudMinimized || !showHotbarBtn) View.GONE else View.VISIBLE
+                treeHudBtn.visibility = if (isHudMinimized || !showTreeBtn) View.GONE else View.VISIBLE
                 gearBtn.visibility = vis
                 exitBtn.visibility = vis
                 topScroll.visibility = vis
@@ -850,6 +899,7 @@ class UIManager(private val service: AutoClickService) {
         scrollContent.addView(toggleVisBtn)
         scrollContent.addView(linesToggleBtn)
         scrollContent.addView(hotbarToggleBtn)
+        scrollContent.addView(treeHudBtn)
         topRow.addView(topScroll)
         topRow.addView(gearBtn)
         topRow.addView(exitBtn)
@@ -973,7 +1023,7 @@ class UIManager(private val service: AutoClickService) {
         for ((idx, btn) in tabButtonsRef.withIndex()) {
             val isSelected = idx == selectedIndex
             btn.background = android.graphics.drawable.GradientDrawable().apply {
-                setColor(Color.parseColor(if (isSelected) "#2962FF" else "#1D2230"))
+                setColor(Color.parseColor(if (isSelected) uiAccentColor else "#1D2230"))
                 cornerRadius = dpToPx(8).toFloat()
             }
             btn.setTextColor(if (isSelected) Color.WHITE else Color.parseColor("#90A4AE"))
@@ -981,16 +1031,41 @@ class UIManager(private val service: AutoClickService) {
         }
     }
 
+    private fun getScreenDimensions(): Pair<Int, Int> {
+        val dm = android.util.DisplayMetrics()
+        windowManager.defaultDisplay.getRealMetrics(dm)
+        return Pair(dm.widthPixels, dm.heightPixels)
+    }
+
+    private fun getMenuContentLayoutParams(windowedHeightDp: Int): FrameLayout.LayoutParams {
+        return if (isMenuFullscreen) {
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        } else {
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                dpToPx(windowedHeightDp)
+            )
+        }
+    }
+
     private fun buildModMenuLayout(params: WindowManager.LayoutParams): View {
+        val (screenW, screenH) = getScreenDimensions()
         val root = LinearLayout(service).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dpToPx(10), dpToPx(10), dpToPx(10), dpToPx(10))
             alpha = uiAlpha
+            if (isMenuFullscreen) {
+                minimumWidth = screenW
+                minimumHeight = screenH
+            }
 
             val drawable = android.graphics.drawable.GradientDrawable()
             drawable.setColor(Color.parseColor("#F2121620"))
-            drawable.setStroke(dpToPx(2), Color.parseColor("#3D5AFE"))
-            drawable.cornerRadius = dpToPx(16).toFloat()
+            drawable.setStroke(dpToPx(2), Color.parseColor(uiAccentColor))
+            drawable.cornerRadius = if (isMenuFullscreen) 0f else dpToPx(16).toFloat()
             background = drawable
             clipToOutline = true
         }
@@ -1025,6 +1100,7 @@ class UIManager(private val service: AutoClickService) {
             }
             setOnClickListener { toggleMenuFullscreen() }
         }
+        fullscreenBtnRef = fullscreenBtn
         val closeBtn = Button(service).apply {
             text = "✕"
             stylePillButton(this, "#3B1E22", null, 8, 13f)
@@ -1077,11 +1153,18 @@ class UIManager(private val service: AutoClickService) {
         root.addView(tabsLayout)
 
         menuContentContainer = FrameLayout(service).apply {
-            layoutParams = LinearLayout.LayoutParams(
-                WindowManager.LayoutParams.MATCH_PARENT,
-                WindowManager.LayoutParams.WRAP_CONTENT,
-                1f
-            )
+            layoutParams = if (isMenuFullscreen) {
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    0,
+                    1f
+                )
+            } else {
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                )
+            }
         }
         root.addView(menuContentContainer)
 
@@ -1096,20 +1179,40 @@ class UIManager(private val service: AutoClickService) {
         return if (isLandscape) dpToPx(460) else dpToPx(330)
     }
 
+    private var currentEditingNode: TargetNode? = null
+
     fun toggleMenuFullscreen() {
         isMenuFullscreen = !isMenuFullscreen
         saveUISettings()
+        val (screenW, screenH) = getScreenDimensions()
         modMenuParams?.let { params ->
             if (isMenuFullscreen) {
-                params.width = WindowManager.LayoutParams.MATCH_PARENT
-                params.height = WindowManager.LayoutParams.MATCH_PARENT
+                params.width = screenW
+                params.height = screenH
                 params.x = 0
                 params.y = 0
             } else {
                 params.width = getMenuDefaultWidth()
                 params.height = WindowManager.LayoutParams.WRAP_CONTENT
-                params.x = dpToPx(30)
+                params.x = dpToPx(24)
                 params.y = dpToPx(60)
+            }
+            fullscreenBtnRef?.text = if (isMenuFullscreen) "🗗" else "⛶"
+            modMenu?.let { root ->
+                root.minimumWidth = if (isMenuFullscreen) screenW else 0
+                root.minimumHeight = if (isMenuFullscreen) screenH else 0
+                val drawable = android.graphics.drawable.GradientDrawable()
+                drawable.setColor(Color.parseColor("#F2121620"))
+                drawable.setStroke(dpToPx(2), Color.parseColor(uiAccentColor))
+                drawable.cornerRadius = if (isMenuFullscreen) 0f else dpToPx(16).toFloat()
+                root.background = drawable
+            }
+            if (::menuContentContainer.isInitialized) {
+                menuContentContainer.layoutParams = if (isMenuFullscreen) {
+                    LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
+                } else {
+                    LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                }
             }
             if (modMenu != null) {
                 windowManager.updateViewLayout(modMenu, params)
@@ -1122,6 +1225,7 @@ class UIManager(private val service: AutoClickService) {
                     "profile_menu_load" -> showProfileMenu(false)
                     "mode_menu" -> showModeMenu()
                     "settings_menu" -> showSettingsMenu()
+                    "edit_menu" -> currentEditingNode?.let { showEditNodeMenu(it) } ?: modMenu?.requestLayout()
                     else -> modMenu?.requestLayout()
                 }
             }
@@ -1130,15 +1234,16 @@ class UIManager(private val service: AutoClickService) {
 
     private fun showModMenu() {
         if (modMenu == null) {
+            val (screenW, screenH) = getScreenDimensions()
             val params = WindowManager.LayoutParams(
-                if (isMenuFullscreen) WindowManager.LayoutParams.MATCH_PARENT else getMenuDefaultWidth(),
-                if (isMenuFullscreen) WindowManager.LayoutParams.MATCH_PARENT else WindowManager.LayoutParams.WRAP_CONTENT,
+                if (isMenuFullscreen) screenW else getMenuDefaultWidth(),
+                if (isMenuFullscreen) screenH else WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 PixelFormat.TRANSLUCENT
             ).apply {
                 gravity = Gravity.TOP or Gravity.START
-                x = if (isMenuFullscreen) 0 else dpToPx(30)
+                x = if (isMenuFullscreen) 0 else dpToPx(24)
                 y = if (isMenuFullscreen) 0 else dpToPx(60)
             }
             modMenuParams = params
@@ -1152,11 +1257,17 @@ class UIManager(private val service: AutoClickService) {
 
     fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
         modMenuParams?.let { params ->
-            if (!isMenuFullscreen) {
+            if (isMenuFullscreen) {
+                val (screenW, screenH) = getScreenDimensions()
+                params.width = screenW
+                params.height = screenH
+                params.x = 0
+                params.y = 0
+            } else {
                 params.width = getMenuDefaultWidth()
-                if (modMenu != null) {
-                    windowManager.updateViewLayout(modMenu, params)
-                }
+            }
+            if (modMenu != null) {
+                windowManager.updateViewLayout(modMenu, params)
             }
         }
     }
@@ -1207,12 +1318,16 @@ class UIManager(private val service: AutoClickService) {
             colorCompareViews[it.id]?.let { view -> windowManager.removeView(view) }
             textZoneStartViews[it.id]?.let { view -> windowManager.removeView(view) }
             textZoneEndViews[it.id]?.let { view -> windowManager.removeView(view) }
+            compareZoneStartViews[it.id]?.let { view -> windowManager.removeView(view) }
+            compareZoneEndViews[it.id]?.let { view -> windowManager.removeView(view) }
         }
         nodeViews.clear()
         swipeEndViews.clear()
         colorCompareViews.clear()
         textZoneStartViews.clear()
         textZoneEndViews.clear()
+        compareZoneStartViews.clear()
+        compareZoneEndViews.clear()
 
         recreateAllNodeViews()
         recreateModMenu(currentTag)
@@ -1259,6 +1374,9 @@ class UIManager(private val service: AutoClickService) {
             if ((node.triggerMode == 1 || node.triggerMode == 2) && node.textZoneStartX != 0) {
                 createTextZoneMarkers(node)
             }
+            if ((node.triggerMode == 1 || node.triggerMode == 2) && node.compareZoneEnabled && node.compareZoneStartX != 0) {
+                createCompareZoneMarkers(node)
+            }
         }
         updateMenu()
     }
@@ -1295,6 +1413,9 @@ class UIManager(private val service: AutoClickService) {
             }
             if ((node.triggerMode == 1 || node.triggerMode == 2) && node.textZoneStartX != 0) {
                 createTextZoneMarkers(node)
+            }
+            if ((node.triggerMode == 1 || node.triggerMode == 2) && node.compareZoneEnabled && node.compareZoneStartX != 0) {
+                createCompareZoneMarkers(node)
             }
         }
         updateMenu()
@@ -1339,6 +1460,10 @@ class UIManager(private val service: AutoClickService) {
         val layout = LinearLayout(service).apply {
             orientation = LinearLayout.VERTICAL
             tag = "main_menu"
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                if (isMenuFullscreen) FrameLayout.LayoutParams.MATCH_PARENT else FrameLayout.LayoutParams.WRAP_CONTENT
+            )
         }
 
         // Play / Record primary bar
@@ -1393,7 +1518,7 @@ class UIManager(private val service: AutoClickService) {
         }
         val addClickBtn = Button(service).apply {
             text = "➕ Добавить шаг"
-            stylePillButton(this, "#1E88E5", null, 10, 12.5f)
+            stylePillButton(this, uiAccentColor, null, 10, 12.5f)
             layoutParams = LinearLayout.LayoutParams(0, dpToPx(38), 1.2f).apply { setMargins(0, 0, dpToPx(4), 0) }
             setOnClickListener {
                 if (appMode == AppMode.ADVANCED) {
@@ -1406,7 +1531,8 @@ class UIManager(private val service: AutoClickService) {
         }
         val treeBtn = Button(service).apply {
             text = "🌳 Схема"
-            stylePillButton(this, "#263238", "#37474F", 10, 12f)
+            stylePillButton(this, "#263238", uiAccentColor, 10, 12f)
+            visibility = if (showTreeBtn) View.VISIBLE else View.GONE
             layoutParams = LinearLayout.LayoutParams(0, dpToPx(38), 0.75f).apply { setMargins(0, 0, dpToPx(4), 0) }
             setOnClickListener { showScenarioTreeMenu() }
         }
@@ -1435,6 +1561,12 @@ class UIManager(private val service: AutoClickService) {
                         textZoneEndViews.values.forEach { try { windowManager.removeView(it) } catch (_: Exception) {} }
                         textZoneEndViews.clear()
                         textZoneEndParams.clear()
+                        compareZoneStartViews.values.forEach { try { windowManager.removeView(it) } catch (_: Exception) {} }
+                        compareZoneStartViews.clear()
+                        compareZoneStartParams.clear()
+                        compareZoneEndViews.values.forEach { try { windowManager.removeView(it) } catch (_: Exception) {} }
+                        compareZoneEndViews.clear()
+                        compareZoneEndParams.clear()
                         colorCompareViews.values.forEach { try { windowManager.removeView(it) } catch (_: Exception) {} }
                         colorCompareViews.clear()
                         colorCompareParams.clear()
@@ -1602,6 +1734,10 @@ class UIManager(private val service: AutoClickService) {
             orientation = LinearLayout.VERTICAL
             tag = "tree_menu"
             setPadding(dpToPx(4), dpToPx(4), dpToPx(4), dpToPx(4))
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                if (isMenuFullscreen) FrameLayout.LayoutParams.MATCH_PARENT else FrameLayout.LayoutParams.WRAP_CONTENT
+            )
         }
 
         val headerRow = LinearLayout(service).apply {
@@ -1713,14 +1849,24 @@ class UIManager(private val service: AutoClickService) {
                             details.append("  • Проверка: $modeDesc\n")
                         }
                         1 -> {
-                            val areaInfo = if (node.imageFullScreenSearch) "Весь экран" else "В радиусе ${node.searchRadius}px"
-                            val clickInfo = if (node.imageClickFoundCenter) ", Клик по найденному" else ""
-                            details.append("  • Проверка: Картинка (${node.colorOperator}, точность ${node.imageThreshold.toInt()}%, $areaInfo$clickInfo)\n")
+                            if (node.compareZoneEnabled) {
+                                details.append("  • Проверка: Сравнение 2 областей экрана (${node.colorOperator}, мин. ${node.imageThreshold.toInt()}%)\n")
+                            } else {
+                                val areaInfo = if (node.imageFullScreenSearch) "Весь экран" else "В радиусе ${node.searchRadius}px"
+                                val clickInfo = if (node.imageClickFoundCenter) ", Клик по найденному" else ""
+                                details.append("  • Проверка: Картинка (${node.colorOperator}, точность ${node.imageThreshold.toInt()}%, $areaInfo$clickInfo)\n")
+                            }
                         }
                         2 -> {
                             if (node.isSmartOcr) {
-                                val cmpTarget = if (node.ocrCompareToNodeId != null) "Метка [#${node.ocrCompareToNodeId}]" else "${node.ocrTargetValue}"
+                                val cmpTarget = when {
+                                    node.compareZoneEnabled -> "Область 2 (Зона 2)"
+                                    node.ocrCompareToNodeId != null -> "Метка [#${node.ocrCompareToNodeId}]"
+                                    else -> "${node.ocrTargetValue}"
+                                }
                                 details.append("  • Проверка: Число OCR (${node.ocrOperator} $cmpTarget)\n")
+                            } else if (node.compareZoneEnabled) {
+                                details.append("  • Проверка: Текст OCR (Зона 1 ${node.colorOperator} Зона 2)\n")
                             } else {
                                 details.append("  • Проверка: Текст OCR '${node.targetText ?: ""}' (${node.colorOperator})\n")
                             }
@@ -1782,6 +1928,11 @@ class UIManager(private val service: AutoClickService) {
         menuContentContainer.removeAllViews()
         val layout = LinearLayout(service).apply {
             orientation = LinearLayout.VERTICAL
+            tag = "help_menu"
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                if (isMenuFullscreen) FrameLayout.LayoutParams.MATCH_PARENT else FrameLayout.LayoutParams.WRAP_CONTENT
+            )
         }
         val headerRow = LinearLayout(service).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -1810,7 +1961,6 @@ class UIManager(private val service: AutoClickService) {
             } else {
                 LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dpToPx(280))
             }
-            tag = "help_menu"
         }
         val textLayout = LinearLayout(service).apply {
             orientation = LinearLayout.VERTICAL
@@ -1888,11 +2038,7 @@ class UIManager(private val service: AutoClickService) {
         setMenuFocusable(false)
         menuContentContainer.removeAllViews()
         val scroll = ScrollView(service).apply {
-            layoutParams = if (isMenuFullscreen) {
-                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
-            } else {
-                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dpToPx(280))
-            }
+            layoutParams = getMenuContentLayoutParams(280)
             tag = "mode_menu"
         }
         val layout = LinearLayout(service).apply {
@@ -1918,8 +2064,8 @@ class UIManager(private val service: AutoClickService) {
             ModeCardInfo(
                 AppMode.ADVANCED,
                 "🧠 Умный режим (Триггеры и Логика)",
-                "Полный доступ: проверка цвета с лупой, поиск фрагментов картинок, чтение текста/чисел (OCR), ветвление и подпрограммы.",
-                "#2962FF"
+                "Полный доступ: проверка цвета с лупой, поиск фрагментов картинок, чтение текста/чисел (OCR), сравнение областей, ветвление и подпрограммы.",
+                uiAccentColor
             ),
             ModeCardInfo(
                 AppMode.RECORD,
@@ -1989,11 +2135,7 @@ class UIManager(private val service: AutoClickService) {
         setMenuFocusable(true)
         menuContentContainer.removeAllViews()
         val scroll = ScrollView(service).apply {
-            layoutParams = if (isMenuFullscreen) {
-                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
-            } else {
-                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dpToPx(290))
-            }
+            layoutParams = getMenuContentLayoutParams(290)
             tag = "settings_menu"
         }
         val layout = LinearLayout(service).apply {
@@ -2016,7 +2158,7 @@ class UIManager(private val service: AutoClickService) {
             }
             box.addView(TextView(service).apply {
                 text = titleStr
-                setTextColor(Color.parseColor("#64B5F6"))
+                setTextColor(try { Color.parseColor(uiAccentColor) } catch (_: Exception) { Color.parseColor("#00C853") })
                 setTypeface(null, Typeface.BOLD)
                 setScaledTextSize(13f)
                 setPadding(0, 0, 0, dpToPx(6))
@@ -2026,7 +2168,50 @@ class UIManager(private val service: AutoClickService) {
         }
 
         // Card 1: Внешний вид и кнопки HUD
-        val uiCard = createGroupCard("🎨 Внешний вид и панель HUD")
+        val uiCard = createGroupCard("🎨 Внешний вид и тема интерфейса")
+
+        // Color Theme Presets
+        uiCard.addView(TextView(service).apply {
+            text = "Акцентный цвет (HUD и меню):"
+            setTextColor(Color.WHITE)
+            setScaledTextSize(12f)
+            setPadding(0, 0, 0, dpToPx(4))
+        })
+        val themePresets = listOf(
+            "🟢 Зелёный" to "#00C853",
+            "🔵 Синий" to "#2962FF",
+            "💠 Бирюза" to "#00B8D4",
+            "🟣 Фиолет." to "#AA00FF",
+            "🟠 Оранж." to "#FF6D00",
+            "🔴 Красный" to "#FF1744"
+        )
+        val themeScroll = HorizontalScrollView(service).apply {
+            isHorizontalScrollBarEnabled = false
+            setPadding(0, 0, 0, dpToPx(6))
+        }
+        val themeRow = LinearLayout(service).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        for ((label, hex) in themePresets) {
+            val isCurrent = uiAccentColor.equals(hex, ignoreCase = true)
+            themeRow.addView(Button(service).apply {
+                text = if (isCurrent) "✓ $label" else label
+                stylePillButton(this, if (isCurrent) hex else "#23293A", hex, 8, 11f)
+                setPadding(dpToPx(10), 0, dpToPx(10), 0)
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dpToPx(32)).apply {
+                    setMargins(0, 0, dpToPx(5), 0)
+                }
+                setOnClickListener {
+                    uiAccentColor = hex
+                    saveUISettings()
+                    recreateFloatingControlBar()
+                    recreateModMenu("settings_menu")
+                }
+            })
+        }
+        themeScroll.addView(themeRow)
+        uiCard.addView(themeScroll)
 
         val alphaLayout = LinearLayout(service).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -2190,6 +2375,17 @@ class UIManager(private val service: AutoClickService) {
         val sysCard = createGroupCard("⚡ Система и отладка")
 
         sysCard.addView(android.widget.CheckBox(service).apply {
+            text = "🌳 Кнопка «Древо сценария» (🌳 Схема) на панели и в меню"
+            setTextColor(Color.WHITE)
+            setScaledTextSize(12f)
+            isChecked = showTreeBtn
+            setOnCheckedChangeListener { _, c ->
+                showTreeBtn = c
+                saveUISettings()
+                recreateFloatingControlBar()
+            }
+        })
+        sysCard.addView(android.widget.CheckBox(service).apply {
             text = "☕ Кофеин (Не гасить экран во время работы)"
             setTextColor(Color.WHITE)
             setScaledTextSize(12f)
@@ -2221,7 +2417,7 @@ class UIManager(private val service: AutoClickService) {
             }
         })
         sysCard.addView(android.widget.CheckBox(service).apply {
-            text = "🚀 Экстремальная скорость (до 600 кликов/сек)"
+            text = "🚀 Экстремальная скорость (снятие лимитов задержки)"
             setTextColor(Color.parseColor("#FF8A80"))
             setScaledTextSize(12f)
             isChecked = service.allowExtremeSpeed
@@ -2233,7 +2429,7 @@ class UIManager(private val service: AutoClickService) {
 
         val saveBtn = Button(service).apply {
             text = "✔ Применить настройки"
-            stylePillButton(this, "#00C853", null, 10, 13.5f)
+            stylePillButton(this, uiAccentColor, null, 10, 13.5f)
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dpToPx(40)).apply {
                 setMargins(0, dpToPx(4), 0, 0)
             }
@@ -2264,11 +2460,7 @@ class UIManager(private val service: AutoClickService) {
         setMenuFocusable(true)
         menuContentContainer.removeAllViews()
         val scrollRoot = ScrollView(service).apply {
-            layoutParams = if (isMenuFullscreen) {
-                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
-            } else {
-                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dpToPx(290))
-            }
+            layoutParams = getMenuContentLayoutParams(290)
             tag = if (isSaving) "profile_menu_save" else "profile_menu_load"
         }
         val layout = LinearLayout(service).apply {
@@ -2699,6 +2891,14 @@ class UIManager(private val service: AutoClickService) {
         textZoneEndViews.clear()
         textZoneEndParams.clear()
         
+        try { compareZoneStartViews.values.forEach { windowManager.removeView(it) } } catch(e: Exception){}
+        compareZoneStartViews.clear()
+        compareZoneStartParams.clear()
+        
+        try { compareZoneEndViews.values.forEach { windowManager.removeView(it) } } catch(e: Exception){}
+        compareZoneEndViews.clear()
+        compareZoneEndParams.clear()
+        
         try { colorCompareViews.values.forEach { windowManager.removeView(it) } } catch(e: Exception){}
         colorCompareViews.clear()
         colorCompareParams.clear()
@@ -2719,15 +2919,12 @@ class UIManager(private val service: AutoClickService) {
     }
 
     private fun showEditNodeMenu(node: TargetNode) {
+        currentEditingNode = node
         setMenuFocusable(true)
         menuContentContainer.removeAllViews()
         val layout = ScrollView(service).apply {
             tag = "edit_menu"
-            layoutParams = if (isMenuFullscreen) {
-                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
-            } else {
-                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dpToPx(310))
-            }
+            layoutParams = getMenuContentLayoutParams(310)
         }
         val content = LinearLayout(service).apply {
             orientation = LinearLayout.VERTICAL
@@ -3291,7 +3488,7 @@ class UIManager(private val service: AutoClickService) {
         triggerModeLayout.apply { addView(triggerModeSpinner) }
 
         val fragZoneBtn = Button(service).apply {
-            text = if (textZoneStartViews.containsKey(node.id)) "Скрыть рамку зоны на экране" else "🔲 Показать рамку зоны на экране"
+            text = if (textZoneStartViews.containsKey(node.id)) "Скрыть рамку Зоны 1 (🟢🔴)" else "🔲 Показать рамку Зоны 1 (🟢🔴)"
             stylePillButton(this, "#283246", "#3E506B", 8, 12f)
             layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, dpToPx(36)).apply {
                 setMargins(0, dpToPx(4), 0, dpToPx(4))
@@ -3299,16 +3496,51 @@ class UIManager(private val service: AutoClickService) {
             setOnClickListener {
                 if (textZoneStartViews.containsKey(node.id)) {
                     removeTextZoneMarkers(node.id)
-                    text = "🔲 Показать рамку зоны на экране"
+                    text = "🔲 Показать рамку Зоны 1 (🟢🔴)"
                 } else {
                     createTextZoneMarkers(node)
-                    text = "Скрыть рамку зоны на экране"
+                    text = "Скрыть рамку Зоны 1 (🟢🔴)"
+                }
+            }
+        }
+
+        val compareZoneBtn = Button(service).apply {
+            text = if (compareZoneStartViews.containsKey(node.id)) "Скрыть рамку Зоны 2 (🟦)" else "🟦 Показать рамку Зоны 2 на экране"
+            stylePillButton(this, "#006064", "#00ACC1", 8, 12f)
+            visibility = if (node.compareZoneEnabled) View.VISIBLE else View.GONE
+            layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, dpToPx(36)).apply {
+                setMargins(0, dpToPx(2), 0, dpToPx(6))
+            }
+            setOnClickListener {
+                if (compareZoneStartViews.containsKey(node.id)) {
+                    removeCompareZoneMarkers(node.id)
+                    text = "🟦 Показать рамку Зоны 2 на экране"
+                } else {
+                    createCompareZoneMarkers(node)
+                    text = "Скрыть рамку Зоны 2 (🟦)"
+                }
+            }
+        }
+
+        val compareTwoRegionsCheck = android.widget.CheckBox(service).apply {
+            text = "🔄 Сравнить две области экрана (Зона 1 и Зона 2)"
+            setTextColor(Color.parseColor("#4DD0E1"))
+            setScaledTextSize(12f)
+            isChecked = node.compareZoneEnabled
+            setOnCheckedChangeListener { _, isChecked ->
+                node.compareZoneEnabled = isChecked
+                compareZoneBtn.visibility = if (isChecked) View.VISIBLE else View.GONE
+                if (isChecked && !compareZoneStartViews.containsKey(node.id)) {
+                    createCompareZoneMarkers(node)
+                    compareZoneBtn.text = "Скрыть рамку Зоны 2 (🟦)"
+                } else if (!isChecked) {
+                    removeCompareZoneMarkers(node.id)
                 }
             }
         }
 
         val textTargetLayout = LinearLayout(service).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 5, 0, 5) }
-        textTargetLayout.addView(TextView(service).apply { text = "Искомый текст:"; setTextColor(Color.WHITE) })
+        textTargetLayout.addView(TextView(service).apply { text = "Искомый текст (если не сравниваем 2 зоны):"; setTextColor(Color.WHITE); setScaledTextSize(12f) })
         val textTargetEdit = EditText(service).apply {
             setText(node.targetText ?: "")
             hint = "Введите текст..."
@@ -3328,10 +3560,11 @@ class UIManager(private val service: AutoClickService) {
         }
         textLangLayout.addView(textLangSpinner)
 
-        val ocrFullscreenLayout = LinearLayout(service).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dpToPx(10), 0, dpToPx(5)) }
+        val ocrFullscreenLayout = LinearLayout(service).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dpToPx(6), 0, dpToPx(4)) }
         val ocrFullscreenCheck = android.widget.CheckBox(service).apply {
             text = "Нажимать на найденный текст (центр метки сдвинется)"
             setTextColor(Color.parseColor("#FFCC00"))
+            setScaledTextSize(12f)
             isChecked = node.ocrFullScreenClick
             setOnCheckedChangeListener { _, isChecked ->
                 node.ocrFullScreenClick = isChecked
@@ -3340,20 +3573,21 @@ class UIManager(private val service: AutoClickService) {
         ocrFullscreenLayout.addView(ocrFullscreenCheck)
         
         // Smart OCR Math Options
-        val smartOcrLayout = LinearLayout(service).apply { orientation = LinearLayout.VERTICAL; setPadding(0, dpToPx(10), 0, dpToPx(5)) }
+        val smartOcrLayout = LinearLayout(service).apply { orientation = LinearLayout.VERTICAL; setPadding(0, dpToPx(6), 0, dpToPx(5)) }
         val smartOcrCheck = android.widget.CheckBox(service).apply {
-            text = "Умный OCR: Математическое сравнение чисел"
+            text = "🔢 Умный OCR: Математическое сравнение чисел"
             setTextColor(Color.parseColor("#69F0AE"))
+            setScaledTextSize(12.5f)
             isChecked = node.isSmartOcr
         }
         smartOcrLayout.addView(smartOcrCheck)
         
         val smartOcrSettings = LinearLayout(service).apply { orientation = LinearLayout.VERTICAL; visibility = if (node.isSmartOcr) View.VISIBLE else View.GONE }
         
-        val smartOcrOpLayout = LinearLayout(service).apply { orientation = LinearLayout.HORIZONTAL }
-        smartOcrOpLayout.addView(TextView(service).apply { text = "Оператор:"; setTextColor(Color.WHITE); layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 0.4f) })
+        val smartOcrOpLayout = LinearLayout(service).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dpToPx(4), 0, dpToPx(4)) }
+        smartOcrOpLayout.addView(TextView(service).apply { text = "Оператор:"; setTextColor(Color.WHITE); setScaledTextSize(12f); layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 0.38f) })
         val smartOcrOpSpinner = android.widget.Spinner(service).apply {
-            layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 0.6f)
+            layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 0.62f)
             val ops = arrayOf("==", "!=", ">", "<", ">=", "<=")
             this.adapter = createThemedSpinnerAdapter(ops)
             setSelection(ops.indexOf(node.ocrOperator).coerceAtLeast(0))
@@ -3361,34 +3595,35 @@ class UIManager(private val service: AutoClickService) {
         smartOcrOpLayout.addView(smartOcrOpSpinner)
         smartOcrSettings.addView(smartOcrOpLayout)
         
-        val ocrCompareTargetLayout = LinearLayout(service).apply { orientation = LinearLayout.HORIZONTAL }
-        ocrCompareTargetLayout.addView(TextView(service).apply { text = "Сравнить с:"; setTextColor(Color.WHITE); layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 0.4f) })
+        val ocrCompareTargetLayout = LinearLayout(service).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dpToPx(4), 0, dpToPx(4)) }
+        ocrCompareTargetLayout.addView(TextView(service).apply { text = "Сравнить с:"; setTextColor(Color.WHITE); setScaledTextSize(12f); layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 0.38f) })
         val availableOcrNodes = service.nodes.filter { it.id != node.id && it.triggerMode == 2 }
         val ocrCompareTargetSpinner = Spinner(service).apply {
-            val list = mutableListOf("Заданным числом")
-            availableOcrNodes.forEach { list.add("Метка ${it.id}") }
+            val list = mutableListOf("Заданным числом", "Второй областью (Зона 2)")
+            availableOcrNodes.forEach { list.add("Метка #${it.id}") }
             
-            val adp = ArrayAdapter(service, android.R.layout.simple_spinner_item, list)
-            adp.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-            adapter = adp
+            this.adapter = createThemedSpinnerAdapter(list.toTypedArray())
             
             var selIndex = 0
-            if (node.ocrCompareToNodeId != null) {
+            if (node.compareZoneEnabled) {
+                selIndex = 1
+            } else if (node.ocrCompareToNodeId != null) {
                 val idx = availableOcrNodes.indexOfFirst { it.id == node.ocrCompareToNodeId }
-                if (idx != -1) selIndex = idx + 1
+                if (idx != -1) selIndex = idx + 2
             }
             setSelection(selIndex)
-            layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 0.6f)
+            layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 0.62f)
         }
         ocrCompareTargetLayout.addView(ocrCompareTargetSpinner)
         smartOcrSettings.addView(ocrCompareTargetLayout)
 
-        val smartOcrValLayout = LinearLayout(service).apply { orientation = LinearLayout.HORIZONTAL }
-        smartOcrValLayout.addView(TextView(service).apply { text = "Значение:"; setTextColor(Color.WHITE); layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 0.4f) })
+        val smartOcrValLayout = LinearLayout(service).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        smartOcrValLayout.addView(TextView(service).apply { text = "Значение:"; setTextColor(Color.WHITE); setScaledTextSize(12f); layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 0.4f) })
         val smartOcrValEdit = EditText(service).apply {
             setText(node.ocrTargetValue.toString())
-            inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL or android.text.InputType.TYPE_NUMBER_FLAG_SIGNED
             setTextColor(Color.WHITE)
+            setScaledTextSize(12.5f)
             layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 0.6f)
         }
         smartOcrValLayout.addView(smartOcrValEdit)
@@ -3397,22 +3632,185 @@ class UIManager(private val service: AutoClickService) {
         ocrCompareTargetSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
                 smartOcrValLayout.visibility = if (position == 0) View.VISIBLE else View.GONE
+                val isRegion2 = (position == 1)
+                if (node.isSmartOcr) {
+                    node.compareZoneEnabled = isRegion2
+                    compareTwoRegionsCheck.isChecked = isRegion2
+                    compareZoneBtn.visibility = if (isRegion2) View.VISIBLE else View.GONE
+                    if (isRegion2 && !compareZoneStartViews.containsKey(node.id)) {
+                        createCompareZoneMarkers(node)
+                        compareZoneBtn.text = "Скрыть рамку Зоны 2 (🟦)"
+                    }
+                }
             }
             override fun onNothingSelected(parent: AdapterView<*>?) {}
         }
         
-        val smartOcrSufLayout = LinearLayout(service).apply { orientation = LinearLayout.VERTICAL }
-        smartOcrSufLayout.addView(TextView(service).apply { text = "Суффиксы (k:1000, m:1000000):"; setTextColor(Color.GRAY) })
-        val smartOcrSufEdit = EditText(service).apply {
-            setText(node.ocrCustomSuffixes)
-            setTextColor(Color.WHITE)
+        // Suffix Sets UI ("Суффиксы сохраняются наборами и используются тоже наборами")
+        val smartOcrSufLayout = LinearLayout(service).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dpToPx(8), dpToPx(8), dpToPx(8), dpToPx(8))
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.parseColor("#1D2432"))
+                cornerRadius = dpToPx(10).toFloat()
+                setStroke(dpToPx(1), Color.parseColor("#2E3B4E"))
+            }
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(0, dpToPx(6), 0, dpToPx(4))
+            }
         }
+        smartOcrSufLayout.addView(TextView(service).apply {
+            text = "📦 Набор суффиксов чисел (K, M, B, тыс...):"
+            setTextColor(Color.parseColor("#80CBC4"))
+            setTypeface(null, Typeface.BOLD)
+            setScaledTextSize(12f)
+            setPadding(0, 0, 0, dpToPx(4))
+        })
+
+        val smartOcrSufEdit = EditText(service).apply {
+            setText(service.getEffectiveSuffixes(node))
+            hint = "k:1000, m:1000000, b:1000000000"
+            setHintTextColor(Color.parseColor("#78909C"))
+            setTextColor(Color.WHITE)
+            setScaledTextSize(11.5f)
+        }
+
+        val suffixSetContainer = LinearLayout(service).apply { orientation = LinearLayout.VERTICAL }
+        fun rebuildSuffixSetSpinner() {
+            suffixSetContainer.removeAllViews()
+            val setsMap = service.getSuffixSetsMap()
+            val setNames = mutableListOf("— Свой список (вручную) —")
+            setNames.addAll(setsMap.keys)
+
+            val spinnerRow = LinearLayout(service).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            val setSpinner = Spinner(service).apply {
+                adapter = createThemedSpinnerAdapter(setNames.toTypedArray())
+                val curIdx = if (node.ocrSuffixSetName != null) setNames.indexOf(node.ocrSuffixSetName!!).coerceAtLeast(0) else 0
+                setSelection(curIdx)
+                layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f)
+                onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                    override fun onItemSelected(parent: AdapterView<*>?, view: View?, pos: Int, id: Long) {
+                        if (pos == 0) {
+                            node.ocrSuffixSetName = null
+                        } else {
+                            val chosenName = setNames[pos]
+                            node.ocrSuffixSetName = chosenName
+                            setsMap[chosenName]?.let { smartOcrSufEdit.setText(it) }
+                        }
+                    }
+                    override fun onNothingSelected(parent: AdapterView<*>?) {}
+                }
+            }
+            val delSetBtn = Button(service).apply {
+                text = "🗑"
+                stylePillButton(this, "#3B1E22", null, 8, 11.5f)
+                setTextColor(Color.parseColor("#FF8A80"))
+                setPadding(0, 0, 0, 0)
+                layoutParams = LinearLayout.LayoutParams(dpToPx(34), dpToPx(32)).apply { setMargins(dpToPx(4), 0, 0, 0) }
+                setOnClickListener {
+                    val selName = node.ocrSuffixSetName
+                    if (selName != null && setsMap.containsKey(selName)) {
+                        service.deleteSuffixSet(selName)
+                        node.ocrSuffixSetName = null
+                        Toast.makeText(service, "Набор «$selName» удалён", Toast.LENGTH_SHORT).show()
+                        rebuildSuffixSetSpinner()
+                    } else {
+                        Toast.makeText(service, "Сначала выберите сохранённый набор", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+            spinnerRow.addView(setSpinner)
+            spinnerRow.addView(delSetBtn)
+            suffixSetContainer.addView(spinnerRow)
+        }
+        rebuildSuffixSetSpinner()
+        smartOcrSufLayout.addView(suffixSetContainer)
         smartOcrSufLayout.addView(smartOcrSufEdit)
+
+        // Quick Add single suffix pair row (e.g. "aa" -> "1e15")
+        val quickAddPairRow = LinearLayout(service).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dpToPx(2), 0, dpToPx(4))
+        }
+        val sufKeyEdit = EditText(service).apply {
+            hint = "Суффикс (aa)"
+            setHintTextColor(Color.parseColor("#78909C"))
+            setTextColor(Color.WHITE)
+            setScaledTextSize(11.5f)
+            layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 0.4f).apply { setMargins(0, 0, dpToPx(4), 0) }
+        }
+        val sufMultEdit = EditText(service).apply {
+            hint = "Множитель (1e15)"
+            setHintTextColor(Color.parseColor("#78909C"))
+            setTextColor(Color.WHITE)
+            setScaledTextSize(11.5f)
+            inputType = InputType.TYPE_CLASS_TEXT
+            layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 0.45f).apply { setMargins(0, 0, dpToPx(4), 0) }
+        }
+        val addPairBtn = Button(service).apply {
+            text = "＋"
+            stylePillButton(this, "#283246", null, 8, 13f)
+            setPadding(0, 0, 0, 0)
+            layoutParams = LinearLayout.LayoutParams(dpToPx(36), dpToPx(32))
+            setOnClickListener {
+                val k = sufKeyEdit.text.toString().trim()
+                val m = sufMultEdit.text.toString().trim()
+                if (k.isNotEmpty() && m.isNotEmpty()) {
+                    val cur = smartOcrSufEdit.text.toString().trim()
+                    smartOcrSufEdit.setText(if (cur.isEmpty()) "$k:$m" else "$cur,$k:$m")
+                    sufKeyEdit.setText("")
+                    sufMultEdit.setText("")
+                }
+            }
+        }
+        quickAddPairRow.addView(sufKeyEdit)
+        quickAddPairRow.addView(sufMultEdit)
+        quickAddPairRow.addView(addPairBtn)
+        smartOcrSufLayout.addView(quickAddPairRow)
+
+        // Save as named Suffix Set row
+        val saveSetRow = LinearLayout(service).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val setNameInput = EditText(service).apply {
+            hint = "Имя набора (напр. Моя Игра)"
+            setText(node.ocrSuffixSetName ?: "")
+            setHintTextColor(Color.parseColor("#78909C"))
+            setTextColor(Color.WHITE)
+            setScaledTextSize(11.5f)
+            layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(0, 0, dpToPx(4), 0) }
+        }
+        val saveSetBtn = Button(service).apply {
+            text = "💾 В набор"
+            stylePillButton(this, uiAccentColor, null, 8, 11.5f)
+            setPadding(dpToPx(10), 0, dpToPx(10), 0)
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dpToPx(32))
+            setOnClickListener {
+                val setName = setNameInput.text.toString().trim().ifEmpty { node.ocrSuffixSetName ?: "Набор ${service.getSuffixSetsMap().size + 1}" }
+                val sufVal = smartOcrSufEdit.text.toString().trim()
+                service.saveSuffixSet(setName, sufVal)
+                node.ocrSuffixSetName = setName
+                node.ocrCustomSuffixes = sufVal
+                setNameInput.setText(setName)
+                rebuildSuffixSetSpinner()
+                Toast.makeText(service, "Набор суффиксов «$setName» сохранён!", Toast.LENGTH_SHORT).show()
+            }
+        }
+        saveSetRow.addView(setNameInput)
+        saveSetRow.addView(saveSetBtn)
+        smartOcrSufLayout.addView(saveSetRow)
+
         smartOcrSettings.addView(smartOcrSufLayout)
         
         smartOcrCheck.setOnCheckedChangeListener { _, isChecked ->
             node.isSmartOcr = isChecked
             smartOcrSettings.visibility = if (isChecked) View.VISIBLE else View.GONE
+            textTargetLayout.visibility = if (isChecked || node.compareZoneEnabled) View.GONE else View.VISIBLE
         }
         smartOcrLayout.addView(smartOcrSettings)
 
@@ -3477,6 +3875,8 @@ class UIManager(private val service: AutoClickService) {
                 linesOverlayView?.visibility = View.INVISIBLE
                 textZoneStartViews.values.forEach { it.visibility = View.INVISIBLE }
                 textZoneEndViews.values.forEach { it.visibility = View.INVISIBLE }
+                compareZoneStartViews.values.forEach { it.visibility = View.INVISIBLE }
+                compareZoneEndViews.values.forEach { it.visibility = View.INVISIBLE }
                 colorCompareViews.values.forEach { it.visibility = View.INVISIBLE }
                 nodeViews.values.forEach { it.visibility = View.INVISIBLE }
 
@@ -3486,6 +3886,8 @@ class UIManager(private val service: AutoClickService) {
                         linesOverlayView?.visibility = View.VISIBLE
                         textZoneStartViews.values.forEach { it.visibility = View.VISIBLE }
                         textZoneEndViews.values.forEach { it.visibility = View.VISIBLE }
+                        compareZoneStartViews.values.forEach { it.visibility = View.VISIBLE }
+                        compareZoneEndViews.values.forEach { it.visibility = View.VISIBLE }
                         colorCompareViews.values.forEach { it.visibility = View.VISIBLE }
                         nodeViews.values.forEach { it.visibility = View.VISIBLE }
 
@@ -3681,18 +4083,28 @@ class UIManager(private val service: AutoClickService) {
                     node.ocrOperator = arrayOf("==", "!=", ">", "<", ">=", "<=")[smartOcrOpSpinner.selectedItemPosition]
                     node.ocrTargetValue = smartOcrValEdit.text.toString().toDoubleOrNull() ?: 0.0
                     node.ocrCustomSuffixes = smartOcrSufEdit.text.toString()
-                    node.ocrCompareToNodeId = if (ocrCompareTargetSpinner.selectedItemPosition > 0) {
-                        availableOcrNodes[ocrCompareTargetSpinner.selectedItemPosition - 1].id
-                    } else null
+                    if (node.ocrSuffixSetName != null) {
+                        service.saveSuffixSet(node.ocrSuffixSetName!!, node.ocrCustomSuffixes)
+                    }
+                    val selPos = ocrCompareTargetSpinner.selectedItemPosition
+                    if (node.isSmartOcr) {
+                        node.compareZoneEnabled = (selPos == 1)
+                        node.ocrCompareToNodeId = if (selPos >= 2) availableOcrNodes[selPos - 2].id else null
+                    } else {
+                        node.compareZoneEnabled = compareTwoRegionsCheck.isChecked
+                        node.ocrCompareToNodeId = null
+                    }
                 }
                 if (node.textZoneStartX == 0 && node.textZoneStartY == 0 && node.textZoneEndX == 0 && node.textZoneEndY == 0) {
                     createTextZoneMarkers(node)
-                    fragZoneBtn.text = "Скрыть рамку зоны на экране"
+                    fragZoneBtn.text = "Скрыть рамку Зоны 1 (🟢🔴)"
                 }
                 modMenu?.visibility = View.INVISIBLE
                 linesOverlayView?.visibility = View.INVISIBLE
                 textZoneStartViews.values.forEach { it.visibility = View.INVISIBLE }
                 textZoneEndViews.values.forEach { it.visibility = View.INVISIBLE }
+                compareZoneStartViews.values.forEach { it.visibility = View.INVISIBLE }
+                compareZoneEndViews.values.forEach { it.visibility = View.INVISIBLE }
                 colorCompareViews.values.forEach { it.visibility = View.INVISIBLE }
                 nodeViews.values.forEach { it.visibility = View.INVISIBLE }
                 
@@ -3702,6 +4114,8 @@ class UIManager(private val service: AutoClickService) {
                         linesOverlayView?.visibility = View.VISIBLE
                         textZoneStartViews.values.forEach { it.visibility = View.VISIBLE }
                         textZoneEndViews.values.forEach { it.visibility = View.VISIBLE }
+                        compareZoneStartViews.values.forEach { it.visibility = View.VISIBLE }
+                        compareZoneEndViews.values.forEach { it.visibility = View.VISIBLE }
                         colorCompareViews.values.forEach { it.visibility = View.VISIBLE }
                         nodeViews.values.forEach { it.visibility = View.VISIBLE }
                         
@@ -3753,7 +4167,7 @@ class UIManager(private val service: AutoClickService) {
         }
 
         val testImgSearchBtn = Button(service).apply {
-            text = "🎯 Тест поиска картинки на экране"
+            text = "🎯 Тест поиска картинки / сравнения зон"
             stylePillButton(this, "#00695C", null, 8, 12f)
             layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, dpToPx(36))
             setOnClickListener {
@@ -3764,11 +4178,14 @@ class UIManager(private val service: AutoClickService) {
                 node.checkResolutionScale = (resolutionScaleBar.progress + 10) / 100f
                 node.imageFullScreenSearch = imageFullScreenSearchCheck.isChecked
                 node.imageClickFoundCenter = imageClickFoundCenterCheck.isChecked
+                node.compareZoneEnabled = compareTwoRegionsCheck.isChecked
 
                 modMenu?.visibility = View.INVISIBLE
                 linesOverlayView?.visibility = View.INVISIBLE
                 textZoneStartViews.values.forEach { it.visibility = View.INVISIBLE }
                 textZoneEndViews.values.forEach { it.visibility = View.INVISIBLE }
+                compareZoneStartViews.values.forEach { it.visibility = View.INVISIBLE }
+                compareZoneEndViews.values.forEach { it.visibility = View.INVISIBLE }
                 colorCompareViews.values.forEach { it.visibility = View.INVISIBLE }
                 nodeViews.values.forEach { it.visibility = View.INVISIBLE }
 
@@ -3779,6 +4196,8 @@ class UIManager(private val service: AutoClickService) {
                         linesOverlayView?.visibility = View.VISIBLE
                         textZoneStartViews.values.forEach { it.visibility = View.VISIBLE }
                         textZoneEndViews.values.forEach { it.visibility = View.VISIBLE }
+                        compareZoneStartViews.values.forEach { it.visibility = View.VISIBLE }
+                        compareZoneEndViews.values.forEach { it.visibility = View.VISIBLE }
                         colorCompareViews.values.forEach { it.visibility = View.VISIBLE }
                         nodeViews.values.forEach { it.visibility = View.VISIBLE }
                     }, 150)
@@ -3988,6 +4407,8 @@ class UIManager(private val service: AutoClickService) {
                 body.addView(colorOpLayout)
                 body.addView(colorToleranceLayout)
                 body.addView(fragZoneBtn)
+                body.addView(compareTwoRegionsCheck)
+                body.addView(compareZoneBtn)
                 body.addView(imageFullScreenSearchCheck)
                 body.addView(imageClickFoundCenterCheck)
                 body.addView(imgThresholdLayout)
@@ -4000,10 +4421,12 @@ class UIManager(private val service: AutoClickService) {
             } else if (node.triggerMode == 2) { // Text Recognition
                 body.addView(colorOpLayout)
                 body.addView(textLangLayout)
+                body.addView(compareTwoRegionsCheck)
                 body.addView(textTargetLayout)
                 body.addView(ocrFullscreenLayout)
                 body.addView(smartOcrLayout)
                 body.addView(fragZoneBtn)
+                body.addView(compareZoneBtn)
                 body.addView(imgPreview)
                 body.addView(capImgBtn)
             }
@@ -4094,13 +4517,19 @@ class UIManager(private val service: AutoClickService) {
             node.targetLanguage = if (textLangSpinner.selectedItemPosition == 1) "eng" else if (textLangSpinner.selectedItemPosition == 2) "rus+eng" else "rus"
             node.ocrFullScreenClick = ocrFullscreenCheck.isChecked
             node.ocrOperator = arrayOf("==", "!=", ">", "<", ">=", "<=")[smartOcrOpSpinner.selectedItemPosition]
-            if (ocrCompareTargetSpinner.selectedItemPosition > 0) {
-                node.ocrCompareToNodeId = availableOcrNodes[ocrCompareTargetSpinner.selectedItemPosition - 1].id
+            val selPos = ocrCompareTargetSpinner.selectedItemPosition
+            if (node.triggerMode == 2 && node.isSmartOcr) {
+                node.compareZoneEnabled = (selPos == 1)
+                node.ocrCompareToNodeId = if (selPos >= 2) availableOcrNodes[selPos - 2].id else null
             } else {
+                node.compareZoneEnabled = compareTwoRegionsCheck.isChecked
                 node.ocrCompareToNodeId = null
             }
             node.ocrTargetValue = smartOcrValEdit.text.toString().toDoubleOrNull() ?: 0.0
             node.ocrCustomSuffixes = smartOcrSufEdit.text.toString()
+            if (node.ocrSuffixSetName != null) {
+                service.saveSuffixSet(node.ocrSuffixSetName!!, node.ocrCustomSuffixes)
+            }
             node.syncWithNodeIds = syncEdit.text.toString().filter { it.isDigit() || it == ',' }
             node.swipeDurationMs = getSwipeDurRowMs()
             node.swipeTargetNodeId = swipeTargetEdit.text.toString().toIntOrNull()
@@ -4114,7 +4543,7 @@ class UIManager(private val service: AutoClickService) {
         // --- SAVE BUTTON ---
         val saveBtn = Button(service).apply {
             text = "✓ Сохранить и вернуться к списку"
-            stylePillButton(this, "#00C853", null, 10, 13.5f)
+            stylePillButton(this, uiAccentColor, null, 10, 13.5f)
             setTypeface(null, Typeface.BOLD)
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dpToPx(42)).apply {
                 setMargins(0, dpToPx(10), 0, dpToPx(4))
@@ -4165,6 +4594,159 @@ class UIManager(private val service: AutoClickService) {
         windowManager.addView(container, params)
         colorCompareViews[node.id] = container
         colorCompareParams[node.id] = params
+    }
+
+    fun createCompareZoneMarkers(node: TargetNode) {
+        if (compareZoneStartViews.containsKey(node.id)) return
+
+        if (node.compareZoneStartX == 0 && node.compareZoneStartY == 0 && node.compareZoneEndX == 0 && node.compareZoneEndY == 0) {
+            node.compareZoneStartX = (node.x - dpToPx(50)).coerceAtLeast(dpToPx(20))
+            node.compareZoneStartY = (node.y + dpToPx(65)).coerceAtLeast(dpToPx(20))
+            node.compareZoneEndX = node.x + dpToPx(50)
+            node.compareZoneEndY = node.y + dpToPx(135)
+        }
+
+        // --- Start Marker (Zone 2) ---
+        val startView = FrameLayout(service)
+        val startCircle = android.view.View(service).apply {
+            background = android.graphics.drawable.GradientDrawable().apply {
+                shape = android.graphics.drawable.GradientDrawable.OVAL
+                setColor(Color.parseColor("#00E5FF"))
+                setSize(dpToPx(30), dpToPx(30))
+            }
+            alpha = 0.85f
+        }
+        val startNumber = TextView(service).apply {
+            text = "⌜2"
+            setTextColor(Color.BLACK)
+            setTypeface(null, Typeface.BOLD)
+            textSize = 13f * uiScale
+            gravity = Gravity.CENTER
+        }
+        startView.addView(startCircle, FrameLayout.LayoutParams(dpToPx(30), dpToPx(30)))
+        startView.addView(startNumber, FrameLayout.LayoutParams(dpToPx(30), dpToPx(30)))
+
+        val startParams = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = node.compareZoneStartX - dpToPx(15)
+            y = node.compareZoneStartY - dpToPx(15)
+        }
+
+        startView.visibility = if (node.isVisible) View.VISIBLE else View.GONE
+        setupCompareZoneTouchListener(startView, startParams, node, true)
+        windowManager.addView(startView, startParams)
+        compareZoneStartViews[node.id] = startView
+        compareZoneStartParams[node.id] = startParams
+
+        // --- End Marker (Zone 2) ---
+        val endView = FrameLayout(service)
+        val endCircle = android.view.View(service).apply {
+            background = android.graphics.drawable.GradientDrawable().apply {
+                shape = android.graphics.drawable.GradientDrawable.OVAL
+                setColor(Color.parseColor("#2979FF"))
+                setSize(dpToPx(30), dpToPx(30))
+            }
+            alpha = 0.85f
+        }
+        val endNumber = TextView(service).apply {
+            text = "2⌟"
+            setTextColor(Color.WHITE)
+            setTypeface(null, Typeface.BOLD)
+            textSize = 13f * uiScale
+            gravity = Gravity.CENTER
+        }
+        endView.addView(endCircle, FrameLayout.LayoutParams(dpToPx(30), dpToPx(30)))
+        endView.addView(endNumber, FrameLayout.LayoutParams(dpToPx(30), dpToPx(30)))
+
+        val endParams = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = node.compareZoneEndX - dpToPx(15)
+            y = node.compareZoneEndY - dpToPx(15)
+        }
+
+        endView.visibility = if (node.isVisible) View.VISIBLE else View.GONE
+        setupCompareZoneTouchListener(endView, endParams, node, false)
+        windowManager.addView(endView, endParams)
+        compareZoneEndViews[node.id] = endView
+        compareZoneEndParams[node.id] = endParams
+        invalidateLines()
+    }
+
+    fun removeCompareZoneMarkers(id: Int) {
+        val startV = compareZoneStartViews.remove(id)
+        if (startV != null) try { windowManager.removeView(startV) } catch (_: Exception) {}
+        compareZoneStartParams.remove(id)
+
+        val endV = compareZoneEndViews.remove(id)
+        if (endV != null) try { windowManager.removeView(endV) } catch (_: Exception) {}
+        compareZoneEndParams.remove(id)
+        invalidateLines()
+    }
+
+    fun setupCompareZoneTouchListener(view: View, params: WindowManager.LayoutParams, node: TargetNode, isStart: Boolean) {
+        var initialX = 0
+        var initialY = 0
+        var initialTouchX = 0f
+        var initialTouchY = 0f
+
+        view.setOnTouchListener { _, event ->
+            if (service.isPlaying) return@setOnTouchListener false
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    initialX = params.x
+                    initialY = params.y
+                    initialTouchX = event.rawX
+                    initialTouchY = event.rawY
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val metrics = service.resources.displayMetrics
+                    var newX = initialX + (event.rawX - initialTouchX).toInt()
+                    var newY = initialY + (event.rawY - initialTouchY).toInt()
+                    if (newX < 0) newX = 0
+                    if (newY < 0) newY = 0
+                    if (newX > metrics.widthPixels - dpToPx(30)) newX = metrics.widthPixels - dpToPx(30)
+                    if (newY > metrics.heightPixels - dpToPx(30)) newY = metrics.heightPixels - dpToPx(30)
+                    params.x = newX
+                    params.y = newY
+                    windowManager.updateViewLayout(view, params)
+                    if (isStart) {
+                        node.compareZoneStartX = params.x + dpToPx(15)
+                        node.compareZoneStartY = params.y + dpToPx(15)
+                    } else {
+                        node.compareZoneEndX = params.x + dpToPx(15)
+                        node.compareZoneEndY = params.y + dpToPx(15)
+                    }
+                    invalidateLines()
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    if (isStart) {
+                        node.compareZoneStartX = params.x + dpToPx(15)
+                        node.compareZoneStartY = params.y + dpToPx(15)
+                    } else {
+                        node.compareZoneEndX = params.x + dpToPx(15)
+                        node.compareZoneEndY = params.y + dpToPx(15)
+                    }
+                    invalidateLines()
+                    service.autoSave()
+                    true
+                }
+                else -> false
+            }
+        }
     }
 
     fun createTextZoneMarkers(node: TargetNode) {
@@ -4642,6 +5224,22 @@ class UIManager(private val service: AutoClickService) {
                             val bottom = Math.max(node.textZoneStartY, node.textZoneEndY).toFloat()
                             canvas.drawRect(left, top, right, bottom, zonePaint)
                         }
+
+                        // Second comparison zone rectangle (Zone 2)
+                        if ((node.triggerMode == 1 || node.triggerMode == 2) && node.compareZoneEnabled && compareZoneStartViews.containsKey(node.id)) {
+                            val zone2Paint = Paint().apply {
+                                color = Color.parseColor("#9900E5FF") // Cyan semitransparent
+                                style = Paint.Style.STROKE
+                                strokeWidth = dpToPx(3).toFloat()
+                                pathEffect = android.graphics.DashPathEffect(floatArrayOf(12f, 8f), 0f)
+                                isAntiAlias = true
+                            }
+                            val left = Math.min(node.compareZoneStartX, node.compareZoneEndX).toFloat()
+                            val top = Math.min(node.compareZoneStartY, node.compareZoneEndY).toFloat()
+                            val right = Math.max(node.compareZoneStartX, node.compareZoneEndX).toFloat()
+                            val bottom = Math.max(node.compareZoneStartY, node.compareZoneEndY).toFloat()
+                            canvas.drawRect(left, top, right, bottom, zone2Paint)
+                        }
                         
                         // "Target ID" (leads to) logic lines
                         val targetIds = listOfNotNull(node.nextNodeIdOnSuccess, node.nextNodeIdOnFail, node.linkedConditionNodeId)
@@ -4748,6 +5346,7 @@ class UIManager(private val service: AutoClickService) {
         nodeParams.remove(id)
         removeSwipeEndMarker(id)
         removeTextZoneMarkers(id)
+        removeCompareZoneMarkers(id)
         removeColorCompareMarker(id)
         service.nodes.removeAll { it.id == id }
         service.autoSave()
@@ -4788,6 +5387,8 @@ class UIManager(private val service: AutoClickService) {
         try { swipeEndViews.values.forEach { windowManager.removeView(it) } } catch(e: Exception){}
         try { textZoneStartViews.values.forEach { windowManager.removeView(it) } } catch(e: Exception){}
         try { textZoneEndViews.values.forEach { windowManager.removeView(it) } } catch(e: Exception){}
+        try { compareZoneStartViews.values.forEach { windowManager.removeView(it) } } catch(e: Exception){}
+        try { compareZoneEndViews.values.forEach { windowManager.removeView(it) } } catch(e: Exception){}
         try { colorCompareViews.values.forEach { windowManager.removeView(it) } } catch(e: Exception){}
         try { linesOverlayView?.let { windowManager.removeView(it) } } catch(e: Exception){}
         hideDebugWindow()

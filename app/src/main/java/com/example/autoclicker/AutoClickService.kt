@@ -58,8 +58,8 @@ class AutoClickService : AccessibilityService() {
             "т" to 1_000_000_000_000.0
         )
         if (suffixes.isNotEmpty()) {
-            for (p in suffixes.split(",")) {
-                val kv = p.split(":")
+            for (p in suffixes.split(Regex("[,;\\n]+"))) {
+                val kv = p.split(Regex("[:=]"))
                 if (kv.size == 2) {
                     val key = kv[0].trim().lowercase()
                     val mult = kv[1].trim().toDoubleOrNull()
@@ -72,6 +72,63 @@ class AutoClickService : AccessibilityService() {
         }
         suffixEntries.sortByDescending { it.first.length }
         return suffixEntries
+    }
+
+    fun getSuffixSetsMap(): LinkedHashMap<String, String> {
+        val map = LinkedHashMap<String, String>()
+        map["Стандарт (K, M, B, T)"] = "k:1000,m:1000000,b:1000000000,t:1000000000000,к:1000,м:1000000,б:1000000000,т:1000000000000"
+        map["Idle-игры (K..Qi, Sx, Sp)"] = "k:1e3,m:1e6,b:1e9,t:1e12,qa:1e15,qi:1e18,sx:1e21,sp:1e24,oc:1e27,no:1e30,dc:1e33"
+        map["Русские (тыс, млн, млрд)"] = "тыс:1e3,млн:1e6,млрд:1e9,трлн:1e12,к:1e3,м:1e6,б:1e9"
+        map["Буквенные (AA, AB, AC..)"] = "k:1e3,m:1e6,b:1e9,t:1e12,aa:1e15,ab:1e18,ac:1e21,ad:1e24,ae:1e27,af:1e30"
+        try {
+            val prefs = getSharedPreferences("AutoClickerSettings", android.content.Context.MODE_PRIVATE)
+            val jsonStr = prefs.getString("SavedSuffixSetsJson", null)
+            if (!jsonStr.isNullOrEmpty()) {
+                val obj = org.json.JSONObject(jsonStr)
+                val keys = obj.keys()
+                while (keys.hasNext()) {
+                    val k = keys.next()
+                    val v = obj.optString(k, "")
+                    if (k.isNotEmpty() && v.isNotEmpty()) {
+                        map[k] = v
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        return map
+    }
+
+    fun saveSuffixSet(setName: String, suffixesStr: String) {
+        val cleanName = setName.trim()
+        val cleanSuf = suffixesStr.trim()
+        if (cleanName.isEmpty() || cleanSuf.isEmpty()) return
+        val map = getSuffixSetsMap()
+        map[cleanName] = cleanSuf
+        val obj = org.json.JSONObject()
+        for ((k, v) in map) {
+            obj.put(k, v)
+        }
+        getSharedPreferences("AutoClickerSettings", android.content.Context.MODE_PRIVATE)
+            .edit().putString("SavedSuffixSetsJson", obj.toString()).apply()
+    }
+
+    fun deleteSuffixSet(setName: String) {
+        val map = getSuffixSetsMap()
+        map.remove(setName)
+        val obj = org.json.JSONObject()
+        for ((k, v) in map) {
+            obj.put(k, v)
+        }
+        getSharedPreferences("AutoClickerSettings", android.content.Context.MODE_PRIVATE)
+            .edit().putString("SavedSuffixSetsJson", obj.toString()).apply()
+    }
+
+    fun getEffectiveOcrSuffixes(node: TargetNode): String {
+        if (node.ocrCustomSuffixes.isNotBlank()) return node.ocrCustomSuffixes
+        val map = getSuffixSetsMap()
+        return map[node.ocrSuffixSetName] ?: "k:1000,m:1000000,b:1000000000,t:1000000000000,к:1000,м:1000000,б:1000000000,т:1000000000000"
     }
 
     private fun parseAllNumericValues(text: String, suffixes: String): List<Double> {
@@ -1295,6 +1352,7 @@ class AutoClickService : AccessibilityService() {
         if (node.targetImageBase64 != null) return true
         if (!node.targetText.isNullOrEmpty()) return true
         if (node.isSmartOcr) return true
+        if (node.compareZoneEnabled) return true
         if (node.compareToNodeId != null) return true
         if (node.colorCompareX != null) return true
         if (node.dynamicColorUpdate) return true
@@ -1404,7 +1462,7 @@ class AutoClickService : AccessibilityService() {
     }
 
     private fun checkNodeConditionAsync(node: TargetNode, bitmap: Bitmap, callback: (Boolean) -> Unit) {
-        if (node.triggerMode == 2 && (!node.targetText.isNullOrEmpty() || node.isSmartOcr)) {
+        if (node.triggerMode == 2 && (!node.targetText.isNullOrEmpty() || node.isSmartOcr || node.compareZoneEnabled)) {
             checkTextCondition(node, bitmap) { isMatch ->
                 callback(isMatch)
             }
@@ -1451,87 +1509,148 @@ class AutoClickService : AccessibilityService() {
         return false
     }
 
+    private fun recognizeZoneSync(fullBitmap: Bitmap, sx: Int, sy: Int, ex: Int, ey: Int, lang: String): String {
+        val left = minOf(sx, ex).coerceIn(0, fullBitmap.width - 1)
+        val top = minOf(sy, ey).coerceIn(0, fullBitmap.height - 1)
+        val right = maxOf(sx, ex).coerceIn(0, fullBitmap.width - 1)
+        val bottom = maxOf(sy, ey).coerceIn(0, fullBitmap.height - 1)
+        val w = maxOf(1, right - left)
+        val h = maxOf(1, bottom - top)
+        if (w < 5 || h < 5) return ""
+        val cropped = Bitmap.createBitmap(fullBitmap, left, top, w, h)
+        val enhanced = enhanceBitmapForOcr(cropped)
+        return try {
+            val analyzer = getHuaweiAnalyzer(lang)
+            val frame = com.huawei.hms.mlsdk.common.MLFrame.fromBitmap(enhanced)
+            val task = analyzer.asyncAnalyseFrame(frame)
+            val result = com.huawei.hmf.tasks.Tasks.await(task)
+            result?.stringValue ?: ""
+        } finally {
+            if (enhanced != cropped && !enhanced.isRecycled) enhanced.recycle()
+            if (!cropped.isRecycled) cropped.recycle()
+        }
+    }
+
     fun testTextRecognition(node: TargetNode, bitmap: Bitmap) {
         val searchStrOrig = node.targetText?.trim() ?: ""
-        if (searchStrOrig.isEmpty() && !node.isSmartOcr) {
+        if (searchStrOrig.isEmpty() && !node.isSmartOcr && !node.compareZoneEnabled) {
             handler.post { Toast.makeText(this, "Пожалуйста, введите искомый текст или включите Умный OCR", Toast.LENGTH_SHORT).show() }
             return
         }
         
         handler.post { Toast.makeText(this, "Тестирование распознавания...", Toast.LENGTH_SHORT).show() }
-        
-        try {
-            val cropped = bitmap
-            val w = cropped.width
-            val h = cropped.height
-            
-            Thread {
-                var debugBmp: Bitmap? = null
-                try {
-                    val recognizedText: String
-                    if (w < 5 || h < 5) {
-                        recognizedText = ""
-                    } else {
-                        val enhanced = enhanceBitmapForOcr(cropped)
-                        debugBmp = enhanced
-                        val analyzer = getHuaweiAnalyzer(node.targetLanguage)
-                        val frame = com.huawei.hms.mlsdk.common.MLFrame.fromBitmap(enhanced)
-                        val task = analyzer.asyncAnalyseFrame(frame)
-                        val result = com.huawei.hmf.tasks.Tasks.await(task)
-                        recognizedText = result?.stringValue ?: ""
-                        if (enhanced != cropped && debugBmp == null) enhanced.recycle()
-                    }
-                    
-                    val searchStr = normalizeCyrillic(searchStrOrig).replace(" ", "")
-                    val recStrOcr = normalizeCyrillic(recognizedText).replace(" ", "")
-                    val maxCost = if (searchStr.length <= 3) 0 else if (searchStr.length <= 6) 1 else searchStr.length / 4
 
-                    var isMatch = false
-                    var debugMsg = ""
-                    var targetSummary = searchStrOrig
-                    
-                    if (node.isSmartOcr) {
-                        val allValues = parseAllNumericValues(recognizedText, node.ocrCustomSuffixes)
-                        val compareValue = if (node.ocrCompareToNodeId != null) {
-                            val otherNode = (nodes).find { it.id == node.ocrCompareToNodeId }
-                            otherNode?.lastRecognizedValue ?: node.ocrTargetValue
+        val runOcrTestWithOptionalFullBitmap: (Bitmap?) -> Unit = { fullScreenBmp ->
+            try {
+                val cropped = bitmap
+                val w = cropped.width
+                val h = cropped.height
+                
+                Thread {
+                    var debugBmp: Bitmap? = null
+                    try {
+                        val recognizedText: String
+                        if (w < 5 || h < 5) {
+                            recognizedText = ""
                         } else {
-                            node.ocrTargetValue
+                            val enhanced = enhanceBitmapForOcr(cropped)
+                            debugBmp = enhanced
+                            val analyzer = getHuaweiAnalyzer(node.targetLanguage)
+                            val frame = com.huawei.hms.mlsdk.common.MLFrame.fromBitmap(enhanced)
+                            val task = analyzer.asyncAnalyseFrame(frame)
+                            val result = com.huawei.hmf.tasks.Tasks.await(task)
+                            recognizedText = result?.stringValue ?: ""
+                            if (enhanced != cropped && debugBmp == null) enhanced.recycle()
                         }
-                        val matchedVal = allValues.firstOrNull { evaluateSmartOcrCondition(it, node.ocrOperator, compareValue) } ?: allValues.firstOrNull()
-                        targetSummary = "[Умный OCR] Число ${node.ocrOperator} $compareValue (Найдено: ${if (allValues.isEmpty()) "НЕТ" else allValues.joinToString(", ")})"
-                        if (matchedVal != null) {
-                            node.lastRecognizedValue = matchedVal
-                            isMatch = evaluateSmartOcrCondition(matchedVal, node.ocrOperator, compareValue)
-                            debugMsg = "Шаг ${node.id}: [Смарт OCR] Текст='$recognizedText', Число=$matchedVal. Условие: $matchedVal ${node.ocrOperator} $compareValue -> $isMatch"
+
+                        var zone2Text = ""
+                        if (node.compareZoneEnabled && fullScreenBmp != null) {
+                            zone2Text = recognizeZoneSync(
+                                fullScreenBmp,
+                                node.compareZoneStartX,
+                                node.compareZoneStartY,
+                                node.compareZoneEndX,
+                                node.compareZoneEndY,
+                                node.targetLanguage
+                            )
+                        }
+                        
+                        val searchStr = normalizeCyrillic(searchStrOrig).replace(" ", "")
+                        val recStrOcr = normalizeCyrillic(recognizedText).replace(" ", "")
+                        val maxCost = if (searchStr.length <= 3) 0 else if (searchStr.length <= 6) 1 else searchStr.length / 4
+
+                        var isMatch = false
+                        var debugMsg = ""
+                        var targetSummary = searchStrOrig
+                        val effectiveSuffixes = getEffectiveOcrSuffixes(node)
+                        
+                        if (node.isSmartOcr) {
+                            val allValues = parseAllNumericValues(recognizedText, effectiveSuffixes)
+                            val compareValue: Double? = when {
+                                node.compareZoneEnabled -> {
+                                    parseAllNumericValues(zone2Text, effectiveSuffixes).firstOrNull()
+                                }
+                                node.ocrCompareToNodeId != null -> {
+                                    val otherNode = (nodes).find { it.id == node.ocrCompareToNodeId }
+                                    otherNode?.lastRecognizedValue ?: node.ocrTargetValue
+                                }
+                                else -> node.ocrTargetValue
+                            }
+                            if (compareValue == null) {
+                                targetSummary = "[Умный OCR: Сравнение областей]\nОбласть 1: ${allValues.joinToString(", ").ifEmpty { "НЕТ" }}\nОбласть 2 ('$zone2Text'): число не найдено"
+                                debugMsg = "Шаг ${node.id}: В Области 2 ('$zone2Text') не удалось распознать число."
+                            } else {
+                                val matchedVal = allValues.firstOrNull { evaluateSmartOcrCondition(it, node.ocrOperator, compareValue) } ?: allValues.firstOrNull()
+                                val cmpSourceDesc = if (node.compareZoneEnabled) "Область 2 ($compareValue, текст '$zone2Text')" else "$compareValue"
+                                targetSummary = "[Умный OCR (${node.ocrSuffixSetName})]\nУсловие: Число ${node.ocrOperator} $cmpSourceDesc\nОбласть 1 числа: ${if (allValues.isEmpty()) "НЕТ" else allValues.joinToString(", ")}"
+                                if (matchedVal != null) {
+                                    node.lastRecognizedValue = matchedVal
+                                    isMatch = evaluateSmartOcrCondition(matchedVal, node.ocrOperator, compareValue)
+                                    debugMsg = "Шаг ${node.id}: [Смарт OCR] Зона1='$recognizedText' ($matchedVal) ${node.ocrOperator} $cmpSourceDesc -> $isMatch"
+                                } else {
+                                    debugMsg = "Шаг ${node.id}: [Смарт OCR] Зона1='$recognizedText'. Не удалось распознать число."
+                                }
+                            }
+                        } else if (node.compareZoneEnabled) {
+                            val norm1 = normalizeCyrillic(recognizedText).replace(Regex("\\s+"), "").lowercase()
+                            val norm2 = normalizeCyrillic(zone2Text).replace(Regex("\\s+"), "").lowercase()
+                            val rawEq = norm1.isNotEmpty() && norm1 == norm2
+                            isMatch = if (node.colorOperator == "!=") !rawEq else rawEq
+                            targetSummary = "Сравнение текста с Областью 2: '$zone2Text' (${node.colorOperator})"
+                            debugMsg = "Шаг ${node.id}: [OCR Области] Зона1='$recognizedText' vs Зона2='$zone2Text' -> $isMatch"
                         } else {
-                            debugMsg = "Шаг ${node.id}: [Смарт OCR] Текст='$recognizedText'. Не удалось распознать число."
+                            val ocrMatch = fuzzyContains(recStrOcr, searchStr, maxCost) ||
+                                          fuzzyContains(recognizedText.lowercase().replace(Regex("\\s+"), ""),
+                                                       searchStrOrig.lowercase().replace(Regex("\\s+"), ""),
+                                                       maxCost)
+                            isMatch = ocrMatch
+                            debugMsg = "Шаг ${node.id}: [OCR] '$recognizedText'. Ищем: '${node.targetText}'. Совпадение: $isMatch"
                         }
-                    } else {
-                        val ocrMatch = fuzzyContains(recStrOcr, searchStr, maxCost) ||
-                                      fuzzyContains(recognizedText.lowercase().replace(Regex("\\s+"), ""),
-                                                   searchStrOrig.lowercase().replace(Regex("\\s+"), ""),
-                                                   maxCost)
-                        isMatch = ocrMatch
-                        debugMsg = "Шаг ${node.id}: [OCR] '$recognizedText'. Ищем: '${node.targetText}'. Совпадение: $isMatch"
-                    }
-                    
-                    if (::uiManager.isInitialized) {
-                        handler.post {
-                            uiManager.logDebug(debugMsg)
-                            val finalBmp = debugBmp ?: cropped
-                            uiManager.showOcrResultDialog(recognizedText, targetSummary, isMatch, finalBmp)
+                        
+                        if (::uiManager.isInitialized) {
+                            handler.post {
+                                uiManager.logDebug(debugMsg)
+                                val finalBmp = debugBmp ?: cropped
+                                uiManager.showOcrResultDialog(recognizedText, targetSummary, isMatch, finalBmp)
+                            }
                         }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                        handler.post { Toast.makeText(this@AutoClickService, "Ошибка: ${e.message}", Toast.LENGTH_SHORT).show() }
                     }
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                    handler.post { Toast.makeText(this@AutoClickService, "Ошибка: ${e.message}", Toast.LENGTH_SHORT).show() }
-                }
-            }.start()
-            
-        } catch (e: Exception) {
-            e.printStackTrace()
-            handler.post { Toast.makeText(this, "Ошибка: ${e.message}", Toast.LENGTH_SHORT).show() }
+                }.start()
+            } catch (e: Exception) {
+                e.printStackTrace()
+                handler.post { Toast.makeText(this, "Ошибка: ${e.message}", Toast.LENGTH_SHORT).show() }
+            }
+        }
+
+        if (node.compareZoneEnabled) {
+            requestScreenshot { fullBmp ->
+                runOcrTestWithOptionalFullBitmap(fullBmp)
+            }
+        } else {
+            runOcrTestWithOptionalFullBitmap(null)
         }
     }
 
@@ -1556,6 +1675,19 @@ class AutoClickService : AccessibilityService() {
                     val searchStrOrig = node.targetText ?: ""
                     val recognizedText: String
                     var foundRect: android.graphics.Rect? = null
+                    val effectiveSuffixes = getEffectiveOcrSuffixes(node)
+
+                    var zone2Text = ""
+                    if (node.compareZoneEnabled) {
+                        zone2Text = recognizeZoneSync(
+                            bitmap,
+                            node.compareZoneStartX,
+                            node.compareZoneStartY,
+                            node.compareZoneEndX,
+                            node.compareZoneEndY,
+                            node.targetLanguage
+                        )
+                    }
                     
                     if (w < 5 || h < 5) {
                         recognizedText = ""
@@ -1570,17 +1702,19 @@ class AutoClickService : AccessibilityService() {
                         if (node.ocrFullScreenClick && result != null) {
                             val searchStr = normalizeCyrillic(searchStrOrig).replace(" ", "").lowercase()
                             val maxCost = if (searchStr.length <= 3) 0 else if (searchStr.length <= 6) 1 else searchStr.length / 4
-                            val compareValue = if (node.ocrCompareToNodeId != null) {
-                                val otherNode = (nodes).find { it.id == node.ocrCompareToNodeId }
-                                otherNode?.lastRecognizedValue ?: node.ocrTargetValue
-                            } else {
-                                node.ocrTargetValue
+                            val compareValue: Double? = when {
+                                node.compareZoneEnabled -> parseAllNumericValues(zone2Text, effectiveSuffixes).firstOrNull()
+                                node.ocrCompareToNodeId != null -> {
+                                    val otherNode = (nodes).find { it.id == node.ocrCompareToNodeId }
+                                    otherNode?.lastRecognizedValue ?: node.ocrTargetValue
+                                }
+                                else -> node.ocrTargetValue
                             }
 
                             for (block in result.blocks) {
                                 for (line in block.contents) {
-                                    if (node.isSmartOcr) {
-                                        val lineVals = parseAllNumericValues(line.stringValue, node.ocrCustomSuffixes)
+                                    if (node.isSmartOcr && compareValue != null) {
+                                        val lineVals = parseAllNumericValues(line.stringValue, effectiveSuffixes)
                                         if (lineVals.any { evaluateSmartOcrCondition(it, node.ocrOperator, compareValue) }) {
                                             foundRect = line.border
                                             break
@@ -1608,21 +1742,32 @@ class AutoClickService : AccessibilityService() {
                     var debugMsg = ""
                     
                     if (node.isSmartOcr) {
-                        val allValues = parseAllNumericValues(recognizedText, node.ocrCustomSuffixes)
-                        val compareValue = if (node.ocrCompareToNodeId != null) {
-                            val otherNode = (nodes).find { it.id == node.ocrCompareToNodeId }
-                            otherNode?.lastRecognizedValue ?: node.ocrTargetValue
-                        } else {
-                            node.ocrTargetValue
+                        val allValues = parseAllNumericValues(recognizedText, effectiveSuffixes)
+                        val compareValue: Double? = when {
+                            node.compareZoneEnabled -> parseAllNumericValues(zone2Text, effectiveSuffixes).firstOrNull()
+                            node.ocrCompareToNodeId != null -> {
+                                val otherNode = (nodes).find { it.id == node.ocrCompareToNodeId }
+                                otherNode?.lastRecognizedValue ?: node.ocrTargetValue
+                            }
+                            else -> node.ocrTargetValue
                         }
-                        val matchedVal = allValues.firstOrNull { evaluateSmartOcrCondition(it, node.ocrOperator, compareValue) } ?: allValues.firstOrNull()
-                        if (matchedVal != null) {
-                            node.lastRecognizedValue = matchedVal
-                            isMatch = evaluateSmartOcrCondition(matchedVal, node.ocrOperator, compareValue)
-                            debugMsg = "Шаг ${node.id}: [Смарт OCR] Текст='$recognizedText', Число=$matchedVal. Условие: $matchedVal ${node.ocrOperator} $compareValue -> $isMatch"
+                        if (compareValue != null) {
+                            val matchedVal = allValues.firstOrNull { evaluateSmartOcrCondition(it, node.ocrOperator, compareValue) } ?: allValues.firstOrNull()
+                            if (matchedVal != null) {
+                                node.lastRecognizedValue = matchedVal
+                                isMatch = evaluateSmartOcrCondition(matchedVal, node.ocrOperator, compareValue)
+                                debugMsg = "Шаг ${node.id}: [Смарт OCR] Зона1='$recognizedText' ($matchedVal) ${node.ocrOperator} $compareValue -> $isMatch"
+                            } else {
+                                debugMsg = "Шаг ${node.id}: [Смарт OCR] Зона1='$recognizedText'. Не удалось распознать число."
+                            }
                         } else {
-                            debugMsg = "Шаг ${node.id}: [Смарт OCR] Текст='$recognizedText'. Не удалось распознать число."
+                            debugMsg = "Шаг ${node.id}: [Смарт OCR] В Области 2 ('$zone2Text') не удалось распознать число."
                         }
+                    } else if (node.compareZoneEnabled) {
+                        val norm1 = normalizeCyrillic(recognizedText).replace(Regex("\\s+"), "").lowercase()
+                        val norm2 = normalizeCyrillic(zone2Text).replace(Regex("\\s+"), "").lowercase()
+                        isMatch = norm1.isNotEmpty() && norm1 == norm2
+                        debugMsg = "Шаг ${node.id}: [OCR Сравнение областей] '$recognizedText' vs '$zone2Text' -> $isMatch"
                     } else {
                         val ocrMatch = fuzzyContains(recStrOcr, searchStr, maxCost) ||
                                       fuzzyContains(recognizedText.lowercase().replace(Regex("\\s+"), ""),
@@ -1871,9 +2016,74 @@ class AutoClickService : AccessibilityService() {
         return Pair(false, bestPct)
     }
 
+    private fun compareTwoRegionsInBitmap(node: TargetNode, bitmap: Bitmap): Pair<Boolean, Float> {
+        val l1 = minOf(node.textZoneStartX, node.textZoneEndX).coerceIn(0, bitmap.width - 1)
+        val t1 = minOf(node.textZoneStartY, node.textZoneEndY).coerceIn(0, bitmap.height - 1)
+        val r1 = maxOf(node.textZoneStartX, node.textZoneEndX).coerceIn(0, bitmap.width)
+        val b1 = maxOf(node.textZoneStartY, node.textZoneEndY).coerceIn(0, bitmap.height)
+        val w1 = (r1 - l1).coerceAtLeast(1)
+        val h1 = (b1 - t1).coerceAtLeast(1)
+
+        val l2 = minOf(node.compareZoneStartX, node.compareZoneEndX).coerceIn(0, bitmap.width - 1)
+        val t2 = minOf(node.compareZoneStartY, node.compareZoneEndY).coerceIn(0, bitmap.height - 1)
+        val r2 = maxOf(node.compareZoneStartX, node.compareZoneEndX).coerceIn(0, bitmap.width)
+        val b2 = maxOf(node.compareZoneStartY, node.compareZoneEndY).coerceIn(0, bitmap.height)
+        val w2 = (r2 - l2).coerceAtLeast(1)
+        val h2 = (b2 - t2).coerceAtLeast(1)
+
+        if (w1 < 2 || h1 < 2 || w2 < 2 || h2 < 2) return Pair(false, 0f)
+
+        val bmp1 = Bitmap.createBitmap(bitmap, l1, t1, w1, h1)
+        val bmp2Raw = Bitmap.createBitmap(bitmap, l2, t2, w2, h2)
+        val bmp2 = if (w1 != w2 || h1 != h2) {
+            Bitmap.createScaledBitmap(bmp2Raw, w1, h1, true)
+        } else {
+            bmp2Raw
+        }
+
+        return try {
+            val px1 = IntArray(w1 * h1)
+            val px2 = IntArray(w1 * h1)
+            bmp1.getPixels(px1, 0, w1, 0, 0, w1, h1)
+            bmp2.getPixels(px2, 0, w1, 0, 0, w1, h1)
+
+            val step = maxOf(1, Math.sqrt((w1 * h1) / 500.0).toInt())
+            val tol = node.colorTolerance
+            var total = 0
+            var matched = 0
+            var y = 0
+            while (y < h1) {
+                var x = 0
+                val rowOff = y * w1
+                while (x < w1) {
+                    val c1 = px1[rowOff + x]
+                    val c2 = px2[rowOff + x]
+                    val rDiff = Math.abs(((c1 shr 16) and 0xFF) - ((c2 shr 16) and 0xFF))
+                    val gDiff = Math.abs(((c1 shr 8) and 0xFF) - ((c2 shr 8) and 0xFF))
+                    val bDiff = Math.abs((c1 and 0xFF) - (c2 and 0xFF))
+                    if (rDiff <= tol && gDiff <= tol && bDiff <= tol) {
+                        matched++
+                    }
+                    total++
+                    x += step
+                }
+                y += step
+            }
+            val pct = if (total > 0) (matched.toFloat() / total) * 100f else 0f
+            val targetThreshold = node.imageThreshold.coerceIn(1f, 100f)
+            node.lastFoundCenterX = l2 + w2 / 2
+            node.lastFoundCenterY = t2 + h2 / 2
+            Pair(pct >= targetThreshold, pct)
+        } finally {
+            if (bmp2 != bmp2Raw && !bmp2.isRecycled) bmp2.recycle()
+            if (!bmp2Raw.isRecycled) bmp2Raw.recycle()
+            if (!bmp1.isRecycled) bmp1.recycle()
+        }
+    }
+
     fun testImageFragmentSearch(node: TargetNode) {
-        if (node.targetImageBase64 == null) {
-            handler.post { Toast.makeText(this, "Сначала захватите или загрузите шаблон изображения", Toast.LENGTH_SHORT).show() }
+        if (!node.compareZoneEnabled && node.targetImageBase64 == null) {
+            handler.post { Toast.makeText(this, "Сначала захватите шаблон или включите сравнение двух областей", Toast.LENGTH_SHORT).show() }
             return
         }
         requestScreenshot { bitmap ->
@@ -1882,13 +2092,19 @@ class AutoClickService : AccessibilityService() {
                 return@requestScreenshot
             }
             val t0 = System.currentTimeMillis()
-            val (found, bestPct) = searchTemplateInBitmap(node, bitmap)
+            val (found, bestPct) = if (node.compareZoneEnabled) {
+                compareTwoRegionsInBitmap(node, bitmap)
+            } else {
+                searchTemplateInBitmap(node, bitmap)
+            }
             val dt = System.currentTimeMillis() - t0
             val finalMatch = if (node.colorOperator == "!=") !found else found
-            val msg = if (found) {
+            val msg = if (node.compareZoneEnabled) {
+                "Сходство Области 1 и Области 2: ${String.format("%.1f", bestPct)}% (порог ${node.imageThreshold}%, ${dt}мс). Условие (${node.colorOperator}): $finalMatch"
+            } else if (found) {
                 "Фрагмент НАЙДЕН (${String.format("%.1f", bestPct)}%) в точке (${node.lastFoundCenterX}, ${node.lastFoundCenterY}) за ${dt}мс. Итог условия: $finalMatch"
             } else {
-                "Фрагмент НЕ найден (порог ${node.imageThreshold}%, время ${dt}мс). Итог условия: $finalMatch"
+                "Фрагмент НЕ найден (макс. ${String.format("%.1f", bestPct)}%, порог ${node.imageThreshold}%, время ${dt}мс). Итог условия: $finalMatch"
             }
             handler.post {
                 if (::uiManager.isInitialized) uiManager.logDebug("Шаг ${node.id}: [Тест Фрагмента] $msg")
@@ -1899,7 +2115,14 @@ class AutoClickService : AccessibilityService() {
 
     private fun checkNodeCondition(node: TargetNode, bitmap: Bitmap): Boolean {
         if (node.triggerMode == 1) {
-            if (node.targetImageBase64 != null) {
+            if (node.compareZoneEnabled) {
+                try {
+                    val (found, _) = compareTwoRegionsInBitmap(node, bitmap)
+                    return if (node.colorOperator == "!=") !found else found
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            } else if (node.targetImageBase64 != null) {
                 try {
                     val (found, _) = searchTemplateInBitmap(node, bitmap)
                     return if (node.colorOperator == "!=") !found else found
@@ -2697,6 +2920,10 @@ class AutoClickService : AccessibilityService() {
                 node.textZoneStartY = (node.textZoneStartY * scaleY).toInt()
                 node.textZoneEndX = (node.textZoneEndX * scaleX).toInt()
                 node.textZoneEndY = (node.textZoneEndY * scaleY).toInt()
+                node.compareZoneStartX = (node.compareZoneStartX * scaleX).toInt()
+                node.compareZoneStartY = (node.compareZoneStartY * scaleY).toInt()
+                node.compareZoneEndX = (node.compareZoneEndX * scaleX).toInt()
+                node.compareZoneEndY = (node.compareZoneEndY * scaleY).toInt()
                 
                 if (node.swipePathPoints.isNotEmpty()) {
                     val scaledPoints = mutableListOf<Pair<Float, Float>>()

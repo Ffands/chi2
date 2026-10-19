@@ -84,7 +84,13 @@ data class TargetNode(
     var ocrOperator: String = ">=",
     var ocrTargetValue: Double = 0.0,
     var ocrCompareToNodeId: Int? = null,
-    var ocrCustomSuffixes: String = "k:1000,m:1000000,b:1000000000,к:1000,м:1000000,б:1000000000"
+    var ocrCustomSuffixes: String = "k:1000,m:1000000,b:1000000000,t:1000000000000,к:1000,м:1000000,б:1000000000,т:1000000000000",
+    var ocrSuffixSetName: String = "Стандарт (K, M, B, T)",
+    var compareZoneEnabled: Boolean = false,
+    var compareZoneStartX: Int = 0,
+    var compareZoneStartY: Int = 0,
+    var compareZoneEndX: Int = 0,
+    var compareZoneEndY: Int = 0
 ) {
     @Transient var lastRecognizedValue: Double? = null
     @Transient var currentCheckCycle: Int = 0
@@ -178,7 +184,13 @@ data class TargetNode(
         if (ocrOperator != ">=") obj.put("ocrOperator", ocrOperator)
         if (ocrTargetValue != 0.0) obj.put("ocrTargetValue", ocrTargetValue)
         if (ocrCompareToNodeId != null) obj.put("ocrCompareToNodeId", ocrCompareToNodeId)
-        if (ocrCustomSuffixes != "k:1000,m:1000000,b:1000000000,к:1000,м:1000000,б:1000000000") obj.put("ocrCustomSuffixes", ocrCustomSuffixes)
+        obj.put("ocrCustomSuffixes", ocrCustomSuffixes)
+        obj.put("ocrSuffixSetName", ocrSuffixSetName)
+        if (compareZoneEnabled) obj.put("compareZoneEnabled", compareZoneEnabled)
+        if (compareZoneStartX != 0) obj.put("compareZoneStartX", compareZoneStartX)
+        if (compareZoneStartY != 0) obj.put("compareZoneStartY", compareZoneStartY)
+        if (compareZoneEndX != 0) obj.put("compareZoneEndX", compareZoneEndX)
+        if (compareZoneEndY != 0) obj.put("compareZoneEndY", compareZoneEndY)
         if (swipePathPoints.isNotEmpty()) {
             val pointArr = org.json.JSONArray()
             for (p in swipePathPoints) {
@@ -213,6 +225,7 @@ data class TargetNode(
             val compX = if (obj.has("colorCompareX")) obj.getInt("colorCompareX") else null
             val compY = if (obj.has("colorCompareY")) obj.getInt("colorCompareY") else null
             val smartOcr = obj.optBoolean("isSmartOcr", false)
+            val cmpZone = obj.optBoolean("compareZoneEnabled", false)
             
             val pathPoints = mutableListOf<Pair<Float, Float>>()
             if (obj.has("swipePathPoints")) {
@@ -235,7 +248,7 @@ data class TargetNode(
                     ))
                 }
             }
-            val hasAnyConditionData = tColor != null || tImage != null || tText != null || dynColor || compNodeId != null || compX != null || smartOcr
+            val hasAnyConditionData = tColor != null || tImage != null || tText != null || dynColor || compNodeId != null || compX != null || smartOcr || cmpZone
             return TargetNode(
                 id = obj.getInt("id"),
                 type = NodeType.valueOf(obj.getString("type")),
@@ -295,7 +308,13 @@ data class TargetNode(
                 ocrOperator = obj.optString("ocrOperator", ">="),
                 ocrTargetValue = obj.optDouble("ocrTargetValue", 0.0),
                 ocrCompareToNodeId = if (obj.has("ocrCompareToNodeId")) obj.getInt("ocrCompareToNodeId") else null,
-                ocrCustomSuffixes = obj.optString("ocrCustomSuffixes", "k:1000,m:1000000,b:1000000000,к:1000,м:1000000,б:1000000000")
+                ocrCustomSuffixes = obj.optString("ocrCustomSuffixes", "k:1000,m:1000000,b:1000000000,t:1000000000000,к:1000,м:1000000,б:1000000000,т:1000000000000"),
+                ocrSuffixSetName = obj.optString("ocrSuffixSetName", "Стандарт (K, M, B, T)"),
+                compareZoneEnabled = cmpZone,
+                compareZoneStartX = obj.optInt("compareZoneStartX", 0),
+                compareZoneStartY = obj.optInt("compareZoneStartY", 0),
+                compareZoneEndX = obj.optInt("compareZoneEndX", 0),
+                compareZoneEndY = obj.optInt("compareZoneEndY", 0)
             )
         }
     }

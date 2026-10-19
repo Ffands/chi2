@@ -235,23 +235,19 @@ class MainActivity : Activity() {
             setPadding(dp(18), dp(24), dp(18), dp(32))
         }
 
-        // Header
+        val prefs = getSharedPreferences("AutoClickerSettings", Context.MODE_PRIVATE)
+        var currentAccentHex = prefs.getString("uiAccentColor", "#00C853") ?: "#00C853"
+
+        // Header (clean without CPS subtitle)
         val title = TextView(this).apply {
             text = "UpwellClick"
             textSize = 26f
             typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER
             setTextColor(Color.WHITE)
-        }
-        val subtitle = TextView(this).apply {
-            text = "Умный автокликер • Триггеры • OCR • Запись жестов"
-            textSize = 13f
-            gravity = Gravity.CENTER
-            setTextColor(Color.parseColor("#90A4AE"))
-            setPadding(0, dp(4), 0, dp(20))
+            setPadding(0, 0, 0, dp(18))
         }
         contentLayout.addView(title)
-        contentLayout.addView(subtitle)
 
         // Status Card at the very top
         statusCardView = LinearLayout(this).apply {
@@ -279,7 +275,7 @@ class MainActivity : Activity() {
             setTextColor(Color.WHITE)
             textSize = 14f
             typeface = Typeface.DEFAULT_BOLD
-            background = roundedBg("#2962FF", null, 12)
+            background = roundedBg(currentAccentHex, null, 12)
             setPadding(dp(12), dp(12), dp(12), dp(12))
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
@@ -349,7 +345,6 @@ class MainActivity : Activity() {
             "ADVANCED" to "🧠 Умный (Поиск цвета, картинок, OCR текста и логика)",
             "RECORD" to "🎥 Запись жестов (Повторяет ваши нажатия вживую)"
         )
-        val prefs = getSharedPreferences("AutoClickerSettings", Context.MODE_PRIVATE)
         val savedModeRaw = prefs.getString("AppMode", "ADVANCED") ?: "ADVANCED"
         val currentMode = if (savedModeRaw == "SINGLE") "SEQUENTIAL" else savedModeRaw
         
@@ -372,6 +367,71 @@ class MainActivity : Activity() {
         }
         modeLayout.addView(modeGroup)
         contentLayout.addView(modeLayout)
+
+        // Theme / Accent Color Customization Card
+        val themeCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = roundedBg("#171C26", "#263238", 16)
+            setPadding(dp(18), dp(16), dp(18), dp(16))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(0, 0, 0, dp(16)) }
+        }
+        themeCard.addView(TextView(this).apply {
+            text = "🎨 Цветовая тема интерфейса"
+            textSize = 16f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.WHITE)
+            setPadding(0, 0, 0, dp(4))
+        })
+        themeCard.addView(TextView(this).apply {
+            text = "Выберите цвет акцентов меню, кнопок и рамок (также доступно в ⚙ Опциях меню):"
+            textSize = 12f
+            setTextColor(Color.parseColor("#90A4AE"))
+            setPadding(0, 0, 0, dp(10))
+        })
+        val themeRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+        val themePresets = listOf(
+            "🟢 Зелёный" to "#00C853",
+            "🔵 Синий" to "#2962FF",
+            "🟣 Фиолет" to "#7C4DFF",
+            "🟠 Оранж" to "#FF6D00",
+            "🩵 Кибер" to "#00838F"
+        )
+        val themeBtns = mutableListOf<Button>()
+        for ((idx, pair) in themePresets.withIndex()) {
+            val tBtn = Button(this).apply {
+                text = pair.first
+                textSize = 11f
+                setTextColor(Color.WHITE)
+                typeface = Typeface.DEFAULT_BOLD
+                isAllCaps = false
+                setPadding(dp(4), dp(8), dp(4), dp(8))
+                val isSel = currentAccentHex.equals(pair.second, ignoreCase = true)
+                background = roundedBg(pair.second, if (isSel) "#FFFFFF" else null, 10)
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    if (idx < themePresets.size - 1) setMargins(0, 0, dp(4), 0)
+                }
+                setOnClickListener {
+                    currentAccentHex = pair.second
+                    prefs.edit().putString("uiAccentColor", pair.second).apply()
+                    settingsBtn.background = roundedBg(pair.second, null, 12)
+                    themeBtns.forEachIndexed { bIdx, b ->
+                        val hex = themePresets[bIdx].second
+                        b.background = roundedBg(hex, if (hex.equals(currentAccentHex, ignoreCase = true)) "#FFFFFF" else null, 10)
+                    }
+                    AutoClickService.instance?.uiManager?.applyThemeColor(pair.second)
+                }
+            }
+            themeBtns.add(tBtn)
+            themeRow.addView(tBtn)
+        }
+        themeCard.addView(themeRow)
+        contentLayout.addView(themeCard)
 
         // Quick 3-step onboarding card for beginners
         val cardGuide = createCard(
@@ -503,8 +563,14 @@ class MainActivity : Activity() {
                     1 -> sb.append("  ↳ Условие: Фрагмент экрана (${node.colorOperator}, порог ${node.imageThreshold.toInt()}%)\n")
                     2 -> {
                         if (node.isSmartOcr) {
-                            val cmp = if (node.ocrCompareToNodeId != null) "Метка [${node.ocrCompareToNodeId}]" else "${node.ocrTargetValue}"
-                            sb.append("  ↳ Условие: Умный OCR (Число ${node.ocrOperator} $cmp)\n")
+                            val cmp = when {
+                                node.compareZoneEnabled -> "Область 2"
+                                node.ocrCompareToNodeId != null -> "Метка [${node.ocrCompareToNodeId}]"
+                                else -> "${node.ocrTargetValue}"
+                            }
+                            sb.append("  ↳ Условие: Умный OCR (Число ${node.ocrOperator} $cmp, набор '${node.ocrSuffixSetName}')\n")
+                        } else if (node.compareZoneEnabled) {
+                            sb.append("  ↳ Условие: Сравнение текста Область 1 ${node.colorOperator} Область 2\n")
                         } else {
                             sb.append("  ↳ Условие: Текст '${node.targetText ?: ""}' (${node.colorOperator})\n")
                         }
