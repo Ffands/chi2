@@ -2,12 +2,16 @@ package com.example.autoclicker
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Path
+import android.graphics.PixelFormat
 import android.os.Handler
 import android.os.Looper
 import android.view.Display
+import android.view.MotionEvent
+import android.view.View
 import android.widget.ArrayAdapter
 import android.widget.Spinner
 import android.widget.AdapterView
