@@ -24,48 +24,138 @@ class AutoClickService : AccessibilityService() {
     var showLines = true
     
     
-    private fun parseNumericValue(text: String, suffixes: String): Double? {
-        val noSpaces = text.replace(Regex("\\s+"), "").lowercase()
-        val match = Regex("(-?\\d+[.,\\d]*)([a-zа-я]*)").find(noSpaces)
-        if (match == null) return null
-        
-        var numPart = match.groupValues[1]
-        val sufPart = match.groupValues[2]
-        
-        if (numPart.contains(",") && numPart.contains(".")) {
-            numPart = numPart.replace(",", "")
-        } else if (numPart.count { it == ',' } == 1 && !numPart.contains(".")) {
-            numPart = numPart.replace(",", ".")
-        } else {
-            numPart = numPart.replace(",", "")
-        }
-        
-        val dotCount = numPart.count { it == '.' }
-        if (dotCount > 1) {
-            numPart = numPart.replace(".", "")
-        }
-        
-        val value = numPart.toDoubleOrNull() ?: return null
-        
-        var multiplier = 1.0
-        if (sufPart.isNotEmpty() && suffixes.isNotEmpty()) {
-            val pairs = suffixes.split(",")
-            val suffixMap = mutableMapOf<String, Double>()
-            for (p in pairs) {
+    private fun normalizeSuffixToken(s: String): String {
+        return s.lowercase()
+            .replace("тыс", "k")
+            .replace("млн", "m")
+            .replace("млрд", "b")
+            .replace("трлн", "t")
+            .replace("mln", "m")
+            .replace("bln", "b")
+            .replace("trn", "t")
+            .replace('к', 'k')
+            .replace('м', 'm')
+            .replace('б', 'b')
+            .replace('в', 'b')
+            .replace('т', 't')
+    }
+
+    private fun buildSuffixMap(suffixes: String): List<Pair<String, Double>> {
+        val suffixEntries = mutableListOf<Pair<String, Double>>(
+            "тыс" to 1_000.0,
+            "млн" to 1_000_000.0,
+            "млрд" to 1_000_000_000.0,
+            "трлн" to 1_000_000_000_000.0,
+            "mln" to 1_000_000.0,
+            "bln" to 1_000_000_000.0,
+            "kk" to 1_000_000.0,
+            "кк" to 1_000_000.0,
+            "t" to 1_000_000_000_000.0,
+            "т" to 1_000_000_000_000.0
+        )
+        if (suffixes.isNotEmpty()) {
+            for (p in suffixes.split(",")) {
                 val kv = p.split(":")
                 if (kv.size == 2) {
-                    suffixMap[kv[0].trim().lowercase()] = kv[1].trim().toDoubleOrNull() ?: 1.0
-                }
-            }
-            for ((suf, mult) in suffixMap) {
-                if (sufPart.startsWith(suf)) {
-                    multiplier = mult
-                    break
+                    val key = kv[0].trim().lowercase()
+                    val mult = kv[1].trim().toDoubleOrNull()
+                    if (key.isNotEmpty() && mult != null) {
+                        suffixEntries.removeAll { it.first == key }
+                        suffixEntries.add(Pair(key, mult))
+                    }
                 }
             }
         }
-        
-        return value * multiplier
+        suffixEntries.sortByDescending { it.first.length }
+        return suffixEntries
+    }
+
+    private fun parseAllNumericValues(text: String, suffixes: String): List<Double> {
+        if (text.isBlank()) return emptyList()
+        // Fix common OCR misreads inside and at the end of numbers: O/o/О/о after digits -> 0
+        var cleaned = text.trim()
+            .replace('—', '-')
+            .replace('–', '-')
+
+        // Repeatedly convert O/o/О/о adjacent to digits into '0' (handles "1OO", "10O", "O.5")
+        var prev: String
+        do {
+            prev = cleaned
+            cleaned = cleaned
+                .replace(Regex("(?<=\\d)[oOоО]"), "0")
+                .replace(Regex("[oOоО](?=[.,]?\\d)"), "0")
+        } while (cleaned != prev)
+
+        // Collapse spaces only between digit groups (e.g. "1 250 000" -> "1250000"), preserving word boundaries for suffixes
+        cleaned = cleaned.replace(Regex("(?<=\\d)[ \\t]+(?=\\d{3}\\b)"), "")
+
+        val suffixEntries = buildSuffixMap(suffixes)
+        // Match number optionally followed by a standalone letter token (suffix candidate)
+        val regex = Regex("(-?\\d+(?:[.,]\\d+)*)(?:[ \\t]*([a-zA-Zа-яА-ЯёЁ]+))?")
+        val results = mutableListOf<Double>()
+
+        for (match in regex.findAll(cleaned)) {
+            var numPart = match.groupValues[1]
+            val sufPart = match.groupValues[2].lowercase()
+
+            if (numPart.contains(",") && numPart.contains(".")) {
+                val lastComma = numPart.lastIndexOf(',')
+                val lastDot = numPart.lastIndexOf('.')
+                numPart = if (lastComma > lastDot) {
+                    numPart.replace(".", "").replace(",", ".")
+                } else {
+                    numPart.replace(",", "")
+                }
+            } else if (numPart.contains(",")) {
+                val commaCount = numPart.count { it == ',' }
+                if (commaCount > 1) {
+                    numPart = numPart.replace(",", "")
+                } else {
+                    val afterComma = numPart.substringAfter(',')
+                    numPart = if (sufPart.isEmpty() && afterComma.length == 3 && !numPart.startsWith("0,") && !numPart.startsWith("-0,")) {
+                        numPart.replace(",", "")
+                    } else {
+                        numPart.replace(",", ".")
+                    }
+                }
+            } else if (numPart.count { it == '.' } > 1) {
+                numPart = numPart.replace(".", "")
+            }
+
+            val value = numPart.toDoubleOrNull() ?: continue
+
+            var multiplier = 1.0
+            if (sufPart.isNotEmpty()) {
+                val normSufPart = normalizeSuffixToken(sufPart)
+                // Require exact token match (or normalized exact match) so words like "монет" or "кристаллов" do not falsely match "м" or "к"
+                for ((suf, mult) in suffixEntries) {
+                    if (sufPart == suf || normSufPart == normalizeSuffixToken(suf)) {
+                        multiplier = mult
+                        break
+                    }
+                }
+            }
+
+            results.add(value * multiplier)
+        }
+
+        return results
+    }
+
+    private fun parseNumericValue(text: String, suffixes: String): Double? {
+        return parseAllNumericValues(text, suffixes).firstOrNull()
+    }
+
+    private fun evaluateSmartOcrCondition(value: Double, operator: String, compareValue: Double): Boolean {
+        return when (operator) {
+            ">" -> value > compareValue
+            "<" -> value < compareValue
+            ">=" -> value >= compareValue
+            "<=" -> value <= compareValue
+            "==" -> Math.abs(value - compareValue) < 1e-6
+            "!=" -> Math.abs(value - compareValue) >= 1e-6
+            else -> false
+        }
     }
 
     fun normalizeCyrillic(str: String): String {
@@ -168,14 +258,101 @@ class AutoClickService : AccessibilityService() {
     }
     val activeThreads = java.util.concurrent.CopyOnWriteArrayList<ExecutionThread>()
     
-    // Gesture Queue
+    // Gesture Queue & Background Holds
     private val gestureQueue = java.util.concurrent.ConcurrentLinkedDeque<android.accessibilityservice.GestureDescription>()
     private var isDispatchingGesture = false
     private var lastGestureDispatchTimeNs = 0L
     private val processGestureRunnable = Runnable { processGestureQueue() }
-    
+
+    data class ActiveHold(
+        val nodeId: Int,
+        val x: Float,
+        val y: Float,
+        val endTimeMs: Long
+    )
+    private val activeHolds = java.util.concurrent.CopyOnWriteArrayList<ActiveHold>()
+    private var isHoldSustaining = false
+
+    private fun sustainActiveHolds() {
+        if (!isPlaying) {
+            activeHolds.clear()
+            isHoldSustaining = false
+            return
+        }
+        val nowMs = System.currentTimeMillis()
+        activeHolds.removeAll { it.endTimeMs <= nowMs + 15L }
+        if (activeHolds.isEmpty() || !gestureQueue.isEmpty()) {
+            isHoldSustaining = false
+            return
+        }
+
+        val maxStrokes = GestureDescription.getMaxStrokeCount()
+        val builder = GestureDescription.Builder()
+        var added = 0
+        for (hold in activeHolds.take(maxStrokes)) {
+            val rem = (hold.endTimeMs - nowMs).coerceIn(10L, 60000L)
+            val path = Path().apply {
+                moveTo(hold.x, hold.y)
+                lineTo(hold.x + 1f, hold.y + 1f)
+            }
+            builder.addStroke(GestureDescription.StrokeDescription(path, 0, rem))
+            added++
+        }
+        if (added == 0) return
+
+        try {
+            val gesture = builder.build()
+            isDispatchingGesture = true
+            isHoldSustaining = true
+            val dispatched = dispatchGesture(gesture, object : android.accessibilityservice.AccessibilityService.GestureResultCallback() {
+                override fun onCompleted(gestureDescription: android.accessibilityservice.GestureDescription?) {
+                    isDispatchingGesture = false
+                    isHoldSustaining = false
+                    if (isPlaying) {
+                        if (!gestureQueue.isEmpty()) {
+                            processGestureQueue()
+                        } else {
+                            val checkNow = System.currentTimeMillis()
+                            activeHolds.removeAll { it.endTimeMs <= checkNow + 15L }
+                            if (activeHolds.isNotEmpty()) {
+                                sustainActiveHolds()
+                            }
+                        }
+                    }
+                }
+                override fun onCancelled(gestureDescription: android.accessibilityservice.GestureDescription?) {
+                    isDispatchingGesture = false
+                    isHoldSustaining = false
+                    if (!gestureQueue.isEmpty() && isPlaying) {
+                        processGestureQueue()
+                    }
+                }
+            }, null)
+            if (!dispatched) {
+                isDispatchingGesture = false
+                isHoldSustaining = false
+            }
+        } catch (e: Exception) {
+            isDispatchingGesture = false
+            isHoldSustaining = false
+        }
+    }
+
     private fun processGestureQueue() {
-        if (gestureQueue.isEmpty() || !isPlaying) return
+        if (!isPlaying) {
+            gestureQueue.clear()
+            activeHolds.clear()
+            isHoldSustaining = false
+            return
+        }
+        if (gestureQueue.isEmpty()) {
+            val nowMs = System.currentTimeMillis()
+            activeHolds.removeAll { it.endTimeMs <= nowMs + 15L }
+            if (activeHolds.isNotEmpty() && !isDispatchingGesture) {
+                sustainActiveHolds()
+            }
+            return
+        }
         
         // Pacing: 3.1ms without flag (~300-320 CPS), 1.6ms with extreme flag (~600-625 CPS)
         val minIntervalNs = if (allowExtremeSpeed) 1_600_000L else 3_100_000L
@@ -197,17 +374,34 @@ class AutoClickService : AccessibilityService() {
         lastGestureDispatchTimeNs = System.nanoTime()
         
         isDispatchingGesture = true
+        isHoldSustaining = false
         val success = dispatchGesture(gesture, object : android.accessibilityservice.AccessibilityService.GestureResultCallback() {
             override fun onCompleted(gestureDescription: android.accessibilityservice.GestureDescription?) {
                 isDispatchingGesture = false
-                if (!gestureQueue.isEmpty() && isPlaying) {
-                    processGestureQueue()
+                if (isPlaying) {
+                    if (!gestureQueue.isEmpty()) {
+                        processGestureQueue()
+                    } else {
+                        val nowMs = System.currentTimeMillis()
+                        activeHolds.removeAll { it.endTimeMs <= nowMs + 15L }
+                        if (activeHolds.isNotEmpty()) {
+                            sustainActiveHolds()
+                        }
+                    }
                 }
             }
             override fun onCancelled(gestureDescription: android.accessibilityservice.GestureDescription?) {
                 isDispatchingGesture = false
-                if (!gestureQueue.isEmpty() && isPlaying) {
-                    processGestureQueue()
+                if (isPlaying) {
+                    if (!gestureQueue.isEmpty()) {
+                        processGestureQueue()
+                    } else {
+                        val nowMs = System.currentTimeMillis()
+                        activeHolds.removeAll { it.endTimeMs <= nowMs + 15L }
+                        if (activeHolds.isNotEmpty()) {
+                            sustainActiveHolds()
+                        }
+                    }
                 }
             }
         }, null)
@@ -272,6 +466,16 @@ class AutoClickService : AccessibilityService() {
                 loadProfileFromJson(data)
                 MainActivity.pendingImportData = null
                 android.widget.Toast.makeText(this, "Профиль успешно загружен", android.widget.Toast.LENGTH_SHORT).show()
+            } ?: run {
+                if (nodes.isEmpty()) {
+                    val profilePrefs = getSharedPreferences("AutoClickerProfiles", android.content.Context.MODE_PRIVATE)
+                    val savedAuto = profilePrefs.getString("Автосохранение", null)
+                    if (!savedAuto.isNullOrEmpty()) {
+                        try {
+                            loadProfileFromJson(savedAuto, append = false)
+                        } catch (_: Exception) {}
+                    }
+                }
             }
             
             if (uiManager.isHudVisible) {
@@ -359,6 +563,7 @@ class AutoClickService : AccessibilityService() {
             android.widget.Toast.makeText(this, "Запись остановлена.", android.widget.Toast.LENGTH_SHORT).show()
             restoreTouchabilitySafe()
             hideRecordOverlay()
+            autoSave()
         }
         uiManager.updateMenu()
         uiManager.recreateFloatingControlBar()
@@ -373,6 +578,8 @@ class AutoClickService : AccessibilityService() {
         if (isPlaying) {
             isPlaying = false
             gestureQueue.clear()
+            activeHolds.clear()
+            isHoldSustaining = false
             if (::uiManager.isInitialized) uiManager.logDebug("--- СТОП ---")
             restoreTouchabilitySafe()
         } else {
@@ -383,13 +590,18 @@ class AutoClickService : AccessibilityService() {
             activeThreads.clear()
             isDispatchingGesture = false
             gestureQueue.clear()
-        if (::uiManager.isInitialized) uiManager.removeAllPhantomNodes()
+            activeHolds.clear()
+            isHoldSustaining = false
+            for (n in nodes) {
+                n.colorHistory.clear()
+                n.lastFoundCenterX = null
+                n.lastFoundCenterY = null
+                if (n.dynamicColorUpdate) {
+                    n.targetColor = null
+                }
+            }
+            if (::uiManager.isInitialized) uiManager.removeAllPhantomNodes()
             
-            // Check if user set multiple start points by looking at all unlinked nodes, or just the first one
-            // We can spawn threads for all nodes that are NOT the target of any other node, unless there's a loop.
-            // For now, spawn 1 thread at the first enabled node. Users can add more threads in the future.
-            // But wait, if they have multiple separate "groups" of nodes, maybe spawn a thread for each?
-            // Let's spawn 1 thread for now, and add a setting for multithread starting later.
             val startNodeId = nodes.firstOrNull { !it.skipSequentialExecution }?.id
             if (startNodeId == null) {
                 isPlaying = false
@@ -458,7 +670,7 @@ class AutoClickService : AccessibilityService() {
         if (index >= routes.size) {
             thread.currentRepetition = 0
             val currentNodesList = thread.currentScriptNodes ?: this.nodes
-            thread.currentNodeId = managerNode.nextNodeIdOnFail ?: getNextNodeLinear(managerNode.id)
+            thread.currentNodeId = managerNode.nextNodeIdOnFail ?: getNextNodeLinear(managerNode.id, currentNodesList)
             if (::uiManager.isInitialized) uiManager.logDebug("Поток ${thread.threadId} Шаг ${managerNode.id}: Менеджер -> ${thread.currentNodeId} (По умолчанию)")
             scheduleNextExecution(thread, managerNode.delayAfterMs)
             return
@@ -485,8 +697,13 @@ class AutoClickService : AccessibilityService() {
         }
     }
 
-        private fun scheduleNextExecution(thread: ExecutionThread, delayMs: Long) {
-        handler.postDelayed({ executeThread(thread) }, delayMs)
+    private fun scheduleNextExecution(thread: ExecutionThread, delayMs: Long) {
+        val effectiveDelay = Limits.getStepDelay(allowExtremeSpeed, delayMs)
+        if (effectiveDelay <= 0L) {
+            handler.post { executeThread(thread) }
+        } else {
+            handler.postDelayed({ executeThread(thread) }, effectiveDelay)
+        }
     }
 
     private fun executeThread(thread: ExecutionThread) {
@@ -550,7 +767,7 @@ class AutoClickService : AccessibilityService() {
                 }
                 thread.currentRepetition = 0
                 if (::uiManager.isInitialized) uiManager.logDebug("Поток ${thread.threadId}: Конец цикла. Запуск ${thread.currentCycle}...")
-                val cycleDelay = if (allowExtremeSpeed) 0L else cycleEndDelayMs
+                val cycleDelay = Limits.getCycleEndDelay(allowExtremeSpeed, cycleEndDelayMs)
                 if (cycleDelay <= 0L) {
                     if (gestureQueue.size >= 2) {
                         handler.postDelayed({ executeThread(thread) }, 1L)
@@ -598,8 +815,19 @@ class AutoClickService : AccessibilityService() {
                             }
                         }
                     }
-                    if (::uiManager.isInitialized) uiManager.logDebug("Поток ${thread.threadId} Шаг ${node.id}: ${if (node.isSwipe) "Свайп" else "Клик"}")
+                    val actionLabel = when {
+                        node.isSwipe -> if (node.swipePathPoints.size > 2) "Свайп по траектории (${node.swipePathPoints.size} тчк)" else "Свайп"
+                        node.isHold -> "Удержание (${node.holdDurationMs}мс в фоне)"
+                        else -> "Клик"
+                    }
+                    if (::uiManager.isInitialized) uiManager.logDebug("Поток ${thread.threadId} Шаг ${node.id}: $actionLabel${if (node.triggerMode == 1 && node.imageClickFoundCenter && node.lastFoundCenterX != null) " (в центр фрагмента ${node.lastFoundCenterX},${node.lastFoundCenterY})" else ""}")
                     performGestureForNodes(activeNodes)
+                } else if (node.triggerMode == 1 && node.imageClickFoundCenter && node.lastFoundCenterX != null && node.lastFoundCenterY != null) {
+                    val cx = node.lastFoundCenterX!!.toFloat()
+                    val cy = node.lastFoundCenterY!!.toFloat()
+                    val dur = Limits.getClickDuration(allowExtremeSpeed, node.clickDurationMs)
+                    if (::uiManager.isInitialized) uiManager.logDebug("Поток ${thread.threadId} Шаг ${node.id}: Клик в центр найденного фрагмента (${cx.toInt()}, ${cy.toInt()})")
+                    performGlobalClick(cx, cy, dur)
                 } else if (node.triggerMode == 2 && node.ocrFullScreenClick) {
                     if (::uiManager.isInitialized) uiManager.logDebug("Поток ${thread.threadId} Шаг ${node.id}: OCR Клик выполнен")
                 } else if (node.type == NodeType.MANAGER) {
@@ -614,7 +842,7 @@ class AutoClickService : AccessibilityService() {
                     if (macroNodes.isNullOrEmpty()) {
                         if (::uiManager.isInitialized) uiManager.logDebug("Ошибка: Не удалось загрузить блок команд ${node.macroProfileName}")
                         thread.currentRepetition = 0
-                        thread.currentNodeId = node.nextNodeIdOnSuccess ?: getNextNodeLinear(node.id)
+                        thread.currentNodeId = node.nextNodeIdOnSuccess ?: getNextNodeLinear(node.id, currentNodesList)
                         scheduleNextExecution(thread, node.delayAfterMs)
                         return@checkConditionForNode
                     }
@@ -623,7 +851,7 @@ class AutoClickService : AccessibilityService() {
                         val pId = if (::uiManager.isInitialized) uiManager.showPhantomNodes(macroNodes) else null
                         val newThread = ExecutionThread(
                             threadId = activeThreads.size + 1,
-                            currentNodeId = macroNodes.firstOrNull()?.id,
+                            currentNodeId = macroNodes.firstOrNull { !it.skipSequentialExecution }?.id,
                             currentScriptNodes = macroNodes,
                             phantomId = pId
                         )
@@ -631,17 +859,17 @@ class AutoClickService : AccessibilityService() {
                         executeThread(newThread)
                         
                         thread.currentRepetition = 0
-                        thread.currentNodeId = node.nextNodeIdOnSuccess ?: getNextNodeLinear(node.id)
+                        thread.currentNodeId = node.nextNodeIdOnSuccess ?: getNextNodeLinear(node.id, currentNodesList)
                         scheduleNextExecution(thread, node.delayAfterMs)
                     } else {
-                        val nextId = node.nextNodeIdOnSuccess ?: getNextNodeLinear(node.id)
+                        val nextId = node.nextNodeIdOnSuccess ?: getNextNodeLinear(node.id, currentNodesList)
                         val pId = if (::uiManager.isInitialized) uiManager.showPhantomNodes(macroNodes) else null
                         thread.callStack.push(ExecutionFrame(thread.currentScriptNodes, nextId, thread.currentRepetition, thread.phantomId))
                         thread.phantomId = pId
                         
                         thread.currentScriptNodes = macroNodes
                         thread.currentRepetition = 0
-                        thread.currentNodeId = macroNodes.firstOrNull()?.id
+                        thread.currentNodeId = macroNodes.firstOrNull { !it.skipSequentialExecution }?.id
                         scheduleNextExecution(thread, node.delayAfterMs)
                     }
                     return@checkConditionForNode
@@ -654,7 +882,7 @@ class AutoClickService : AccessibilityService() {
                     thread.currentNodeId = node.id
                 } else {
                     thread.currentRepetition = 0
-                    thread.currentNodeId = node.nextNodeIdOnSuccess ?: getNextNodeLinear(node.id)
+                    thread.currentNodeId = node.nextNodeIdOnSuccess ?: getNextNodeLinear(node.id, currentNodesList)
                 }
             } else {
                 if (node.maxCheckCycles != null && node.maxCheckCycles!! > 0) {
@@ -663,7 +891,7 @@ class AutoClickService : AccessibilityService() {
                     if (thread.currentCheckCycle >= node.maxCheckCycles!!) {
                         thread.currentCheckCycle = 0
                         thread.currentRepetition = 0
-                        thread.currentNodeId = node.nextNodeIdOnFail ?: getNextNodeLinear(node.id)
+                        thread.currentNodeId = node.nextNodeIdOnFail ?: getNextNodeLinear(node.id, currentNodesList)
                     } else {
                         thread.currentNodeId = node.id
                     }
@@ -676,18 +904,21 @@ class AutoClickService : AccessibilityService() {
             updateHighlight()
 
             val randomDelay = if (node.randomizeDelayMs > 0) (0..node.randomizeDelayMs).random() else 0L
+            val requestedDelay = Math.max(0L, node.delayAfterMs + randomDelay)
             val finalDelay = if (!isMatch && thread.currentNodeId == node.id) {
-                Limits.getCheckDelay(allowExtremeSpeed, node.triggerMode == 2)
+                Limits.getCheckDelay(allowExtremeSpeed, node.triggerMode == 1 || node.triggerMode == 2, requestedDelay)
             } else {
-                if (allowExtremeSpeed) 0L else Math.max(0L, node.delayAfterMs + randomDelay)
+                Limits.getStepDelay(allowExtremeSpeed, requestedDelay)
             }
 
-            if (finalDelay <= 0L) {
+            if (node.type == NodeType.CLICK && finalDelay <= Limits.MIN_STEP_DELAY) {
                 if (gestureQueue.size >= 2) {
                     handler.postDelayed({ executeThread(thread) }, 1L)
                 } else {
                     handler.post { executeThread(thread) }
                 }
+            } else if (finalDelay <= 0L) {
+                handler.post { executeThread(thread) }
             } else {
                 handler.postDelayed({ executeThread(thread) }, finalDelay)
             }
@@ -708,19 +939,21 @@ class AutoClickService : AccessibilityService() {
         if (activeThreads.all { !it.isActive }) {
             isPlaying = false
             gestureQueue.clear()
+            activeHolds.clear()
+            isHoldSustaining = false
             restoreTouchabilitySafe()
             uiManager.updateMenu()
         }
     }
 
-    private fun getNextNodeLinear(currentId: Int): Int? {
-        val index = nodes.indexOfFirst { it.id == currentId }
+    private fun getNextNodeLinear(currentId: Int, nodesList: List<TargetNode> = this.nodes): Int? {
+        val index = nodesList.indexOfFirst { it.id == currentId }
+        if (index == -1) return null
         var nextIndex = index + 1
-        val nSize = nodes.size
-        var looped = false
+        val nSize = nodesList.size
         
         while (nextIndex < nSize) {
-            val n = nodes[nextIndex]
+            val n = nodesList[nextIndex]
             if (!n.skipSequentialExecution) {
                 return n.id
             }
@@ -730,118 +963,169 @@ class AutoClickService : AccessibilityService() {
         return null // all nodes skipped
     }
 
-    private fun performGestureForNodes(activeNodes: List<TargetNode>) {
-        if (enableMultitouch) {
-            val builder = GestureDescription.Builder()
-            for (node in activeNodes) {
-                val path = Path()
-                var startX = node.x.toFloat()
-                var startY = node.y.toFloat()
+    fun buildSmoothSwipePath(startX: Float, startY: Float, points: List<Pair<Float, Float>>): Path {
+        val path = Path()
+        path.moveTo(startX, startY)
+        if (points.isEmpty()) {
+            path.lineTo(startX + 1f, startY + 1f)
+            return path
+        }
+        val baseX = points.first().first
+        val baseY = points.first().second
+        val offsetX = startX - baseX
+        val offsetY = startY - baseY
+        if (points.size <= 2) {
+            val last = points.last()
+            path.lineTo((last.first + offsetX).coerceAtLeast(0f), (last.second + offsetY).coerceAtLeast(0f))
+            return path
+        }
+        for (i in 1 until points.size - 1) {
+            val p1x = (points[i].first + offsetX).coerceAtLeast(0f)
+            val p1y = (points[i].second + offsetY).coerceAtLeast(0f)
+            val p2x = (points[i + 1].first + offsetX).coerceAtLeast(0f)
+            val p2y = (points[i + 1].second + offsetY).coerceAtLeast(0f)
+            val midX = (p1x + p2x) / 2f
+            val midY = (p1y + p2y) / 2f
+            path.quadTo(p1x, p1y, midX, midY)
+        }
+        val last = points.last()
+        path.lineTo((last.first + offsetX).coerceAtLeast(0f), (last.second + offsetY).coerceAtLeast(0f))
+        return path
+    }
+
+    private fun buildNodeStroke(node: TargetNode): Pair<GestureDescription.StrokeDescription?, Long> {
+        val useFoundCenter = !node.isSwipe && node.triggerMode == 1 && node.imageClickFoundCenter && node.lastFoundCenterX != null && node.lastFoundCenterY != null
+        var startX = if (useFoundCenter) node.lastFoundCenterX!!.toFloat() else node.x.toFloat()
+        var startY = if (useFoundCenter) node.lastFoundCenterY!!.toFloat() else node.y.toFloat()
+        if (node.randomizeRadius > 0) {
+            val angle = Math.random() * Math.PI * 2
+            val r = Math.random() * node.randomizeRadius
+            startX = (startX + (Math.cos(angle) * r).toFloat()).coerceAtLeast(0f)
+            startY = (startY + (Math.sin(angle) * r).toFloat()).coerceAtLeast(0f)
+        }
+
+        if (node.isHold && !node.isSwipe) {
+            val nowMs = System.currentTimeMillis()
+            val holdDur = Limits.getSwipeDuration(allowExtremeSpeed, node.holdDurationMs)
+            activeHolds.removeAll { it.nodeId == node.id }
+            activeHolds.add(ActiveHold(node.id, startX, startY, nowMs + holdDur))
+            return Pair(null, holdDur)
+        }
+
+        val path: Path
+        if (node.isSwipe) {
+            if (node.swipeTargetNodeId != null) {
+                var eX = node.swipeEndX.toFloat()
+                var eY = node.swipeEndY.toFloat()
+                val tgtNode = nodes.find { it.id == node.swipeTargetNodeId }
+                if (tgtNode != null) {
+                    try {
+                        uiManager.updateNodeScreenPosition(tgtNode)
+                    } catch (_: Exception) {}
+                    eX = tgtNode.x.toFloat()
+                    eY = tgtNode.y.toFloat()
+                }
                 if (node.randomizeRadius > 0) {
                     val angle = Math.random() * Math.PI * 2
                     val r = Math.random() * node.randomizeRadius
-                    startX += (Math.cos(angle) * r).toFloat()
-                    startY += (Math.sin(angle) * r).toFloat()
+                    eX = (eX + (Math.cos(angle) * r).toFloat()).coerceAtLeast(0f)
+                    eY = (eY + (Math.sin(angle) * r).toFloat()).coerceAtLeast(0f)
                 }
-                path.moveTo(startX, startY)
-                if (node.isSwipe) {
-                    var eX = node.swipeEndX.toFloat()
-                    var eY = node.swipeEndY.toFloat()
-                    if (node.swipeTargetNodeId != null) {
-                        val tgtNode = (nodes).find { it.id == node.swipeTargetNodeId }
-                        if (tgtNode != null) {
-                            try {
-                                uiManager.updateNodeScreenPosition(tgtNode)
-                            } catch(e: Exception){}
-                            eX = tgtNode.x.toFloat()
-                            eY = tgtNode.y.toFloat()
-                        }
-                        if (node.randomizeRadius > 0) {
-                            val angle = Math.random() * Math.PI * 2
-                            val r = Math.random() * node.randomizeRadius
-                            eX += (Math.cos(angle) * r).toFloat()
-                            eY += (Math.sin(angle) * r).toFloat()
-                        }
-                        path.lineTo(eX, eY)
-                    } else if (node.swipePathPoints.isNotEmpty()) {
-                        path.moveTo(node.swipePathPoints[0].first, node.swipePathPoints[0].second)
-                        for (i in 1 until node.swipePathPoints.size) {
-                            path.lineTo(node.swipePathPoints[i].first, node.swipePathPoints[i].second)
-                        }
-                    } else {
-                        if (node.randomizeRadius > 0) {
-                            val angle = Math.random() * Math.PI * 2
-                            val r = Math.random() * node.randomizeRadius
-                            eX += (Math.cos(angle) * r).toFloat()
-                            eY += (Math.sin(angle) * r).toFloat()
-                        }
-                        path.lineTo(eX, eY)
-                    }
-                } else {
-                    path.lineTo(startX + 1f, startY + 1f)
+                path = Path().apply {
+                    moveTo(startX, startY)
+                    lineTo(eX, eY)
                 }
-                val duration = if (node.isSwipe) Limits.getSwipeDuration(allowExtremeSpeed, node.swipeDurationMs) else Limits.getClickDuration(allowExtremeSpeed, node.clickDurationMs)
-                val stroke = GestureDescription.StrokeDescription(path, 0, duration)
-                builder.addStroke(stroke)
+            } else if (node.swipePathPoints.size >= 2) {
+                path = buildSmoothSwipePath(startX, startY, node.swipePathPoints)
+            } else {
+                var eX = node.swipeEndX.toFloat()
+                var eY = node.swipeEndY.toFloat()
+                if (node.randomizeRadius > 0) {
+                    val angle = Math.random() * Math.PI * 2
+                    val r = Math.random() * node.randomizeRadius
+                    eX = (eX + (Math.cos(angle) * r).toFloat()).coerceAtLeast(0f)
+                    eY = (eY + (Math.sin(angle) * r).toFloat()).coerceAtLeast(0f)
+                }
+                path = Path().apply {
+                    moveTo(startX, startY)
+                    lineTo(eX, eY)
+                }
             }
-            gestureQueue.add(builder.build())
         } else {
-            for (node in activeNodes) {
-                val builder = GestureDescription.Builder()
-                val path = Path()
-                var startX = node.x.toFloat()
-                var startY = node.y.toFloat()
-                if (node.randomizeRadius > 0) {
-                    val angle = Math.random() * Math.PI * 2
-                    val r = Math.random() * node.randomizeRadius
-                    startX += (Math.cos(angle) * r).toFloat()
-                    startY += (Math.sin(angle) * r).toFloat()
-                }
-                path.moveTo(startX, startY)
-                if (node.isSwipe) {
-                    var eX = node.swipeEndX.toFloat()
-                    var eY = node.swipeEndY.toFloat()
-                    if (node.swipeTargetNodeId != null) {
-                        val tgtNode = (nodes).find { it.id == node.swipeTargetNodeId }
-                        if (tgtNode != null) {
-                            try {
-                                uiManager.updateNodeScreenPosition(tgtNode)
-                            } catch(e: Exception){}
-                            eX = tgtNode.x.toFloat()
-                            eY = tgtNode.y.toFloat()
-                        }
-                        if (node.randomizeRadius > 0) {
-                            val angle = Math.random() * Math.PI * 2
-                            val r = Math.random() * node.randomizeRadius
-                            eX += (Math.cos(angle) * r).toFloat()
-                            eY += (Math.sin(angle) * r).toFloat()
-                        }
-                        path.lineTo(eX, eY)
-                    } else if (node.swipePathPoints.isNotEmpty()) {
-                        path.moveTo(node.swipePathPoints[0].first, node.swipePathPoints[0].second)
-                        for (i in 1 until node.swipePathPoints.size) {
-                            path.lineTo(node.swipePathPoints[i].first, node.swipePathPoints[i].second)
-                        }
-                    } else {
-                        if (node.randomizeRadius > 0) {
-                            val angle = Math.random() * Math.PI * 2
-                            val r = Math.random() * node.randomizeRadius
-                            eX += (Math.cos(angle) * r).toFloat()
-                            eY += (Math.sin(angle) * r).toFloat()
-                        }
-                        path.lineTo(eX, eY)
-                    }
-                } else {
-                    path.lineTo(startX + 1f, startY + 1f)
-                }
-                val duration = if (node.isSwipe) Limits.getSwipeDuration(allowExtremeSpeed, node.swipeDurationMs) else Limits.getClickDuration(allowExtremeSpeed, node.clickDurationMs)
-                val stroke = GestureDescription.StrokeDescription(path, 0, duration)
-                builder.addStroke(stroke)
-                gestureQueue.add(builder.build())
+            path = Path().apply {
+                moveTo(startX, startY)
+                lineTo(startX + 1f, startY + 1f)
             }
         }
-        
-        processGestureQueue()
+
+        val duration = if (node.isSwipe) Limits.getSwipeDuration(allowExtremeSpeed, node.swipeDurationMs) else Limits.getClickDuration(allowExtremeSpeed, node.clickDurationMs)
+        return Pair(GestureDescription.StrokeDescription(path, 0, duration), duration)
+    }
+
+    private fun performGestureForNodes(activeNodes: List<TargetNode>) {
+        val nowMs = System.currentTimeMillis()
+        activeHolds.removeAll { it.endTimeMs <= nowMs + 15L }
+        val maxStrokes = GestureDescription.getMaxStrokeCount()
+
+        if (enableMultitouch) {
+            val builder = GestureDescription.Builder()
+            var strokeCount = 0
+            var maxNormalDur = 1L
+            for (node in activeNodes) {
+                if (strokeCount >= maxStrokes) break
+                val (stroke, dur) = buildNodeStroke(node)
+                if (stroke != null) {
+                    builder.addStroke(stroke)
+                    if (dur > maxNormalDur) maxNormalDur = dur
+                    strokeCount++
+                }
+            }
+            if (strokeCount > 0) {
+                if (activeHolds.isNotEmpty() && strokeCount < maxStrokes) {
+                    for (hold in activeHolds) {
+                        if (strokeCount >= maxStrokes) break
+                        val rem = (hold.endTimeMs - nowMs).coerceAtLeast(1L)
+                        val holdPath = Path().apply {
+                            moveTo(hold.x, hold.y)
+                            lineTo(hold.x + 1f, hold.y + 1f)
+                        }
+                        builder.addStroke(GestureDescription.StrokeDescription(holdPath, 0, Math.min(rem, maxNormalDur).coerceAtLeast(1L)))
+                        strokeCount++
+                    }
+                }
+                gestureQueue.add(builder.build())
+            }
+        } else {
+            for (node in activeNodes) {
+                val (stroke, dur) = buildNodeStroke(node)
+                if (stroke != null) {
+                    val builder = GestureDescription.Builder()
+                    builder.addStroke(stroke)
+                    if (activeHolds.isNotEmpty() && maxStrokes >= 2) {
+                        var strokeCount = 1
+                        for (hold in activeHolds) {
+                            if (strokeCount >= maxStrokes) break
+                            val rem = (hold.endTimeMs - nowMs).coerceAtLeast(1L)
+                            val holdPath = Path().apply {
+                                moveTo(hold.x, hold.y)
+                                lineTo(hold.x + 1f, hold.y + 1f)
+                            }
+                            builder.addStroke(GestureDescription.StrokeDescription(holdPath, 0, Math.min(rem, dur).coerceAtLeast(1L)))
+                            strokeCount++
+                        }
+                    }
+                    gestureQueue.add(builder.build())
+                }
+            }
+        }
+
+        if (gestureQueue.isEmpty()) {
+            if (activeHolds.isNotEmpty() && (!isDispatchingGesture || isHoldSustaining)) {
+                sustainActiveHolds()
+            }
+        } else {
+            processGestureQueue()
+        }
     }
 
     fun captureColorAt(x: Int, y: Int, callback: (Int?) -> Unit) {
@@ -861,6 +1145,14 @@ class AutoClickService : AccessibilityService() {
                         if (hwBitmap != null) {
                             val bitmap = hwBitmap.copy(Bitmap.Config.ARGB_8888, false)
                             if (bitmap != null) {
+                                if (node.textZoneStartX == 0 && node.textZoneStartY == 0 && node.textZoneEndX == 0 && node.textZoneEndY == 0) {
+                                    val padX = if (::uiManager.isInitialized) uiManager.dpToPx(60) else 120
+                                    val padY = if (::uiManager.isInitialized) uiManager.dpToPx(40) else 80
+                                    node.textZoneStartX = (node.x - padX).coerceIn(0, bitmap.width - 1)
+                                    node.textZoneStartY = (node.y - padY).coerceIn(0, bitmap.height - 1)
+                                    node.textZoneEndX = (node.x + padX).coerceIn(0, bitmap.width - 1)
+                                    node.textZoneEndY = (node.y + padY).coerceIn(0, bitmap.height - 1)
+                                }
                                 val left = minOf(node.textZoneStartX, node.textZoneEndX)
                                 val top = minOf(node.textZoneStartY, node.textZoneEndY)
                                 val right = maxOf(node.textZoneStartX, node.textZoneEndX)
@@ -904,7 +1196,8 @@ class AutoClickService : AccessibilityService() {
         if (node.triggerMode == -1) return false
         if (node.targetColor != null) return true
         if (node.targetImageBase64 != null) return true
-        if (node.targetText != null) return true
+        if (!node.targetText.isNullOrEmpty()) return true
+        if (node.isSmartOcr) return true
         if (node.compareToNodeId != null) return true
         if (node.colorCompareX != null) return true
         if (node.dynamicColorUpdate) return true
@@ -1014,7 +1307,7 @@ class AutoClickService : AccessibilityService() {
     }
 
     private fun checkNodeConditionAsync(node: TargetNode, bitmap: Bitmap, callback: (Boolean) -> Unit) {
-        if (node.triggerMode == 2 && node.targetText?.isNotEmpty() == true) {
+        if (node.triggerMode == 2 && (!node.targetText.isNullOrEmpty() || node.isSmartOcr)) {
             checkTextCondition(node, bitmap) { isMatch ->
                 callback(isMatch)
             }
@@ -1063,8 +1356,8 @@ class AutoClickService : AccessibilityService() {
 
     fun testTextRecognition(node: TargetNode, bitmap: Bitmap) {
         val searchStrOrig = node.targetText?.trim() ?: ""
-        if (searchStrOrig.isEmpty()) {
-            handler.post { Toast.makeText(this, "Пожалуйста, введите искомый текст", Toast.LENGTH_SHORT).show() }
+        if (searchStrOrig.isEmpty() && !node.isSmartOcr) {
+            handler.post { Toast.makeText(this, "Пожалуйста, введите искомый текст или включите Умный OCR", Toast.LENGTH_SHORT).show() }
             return
         }
         
@@ -1074,7 +1367,6 @@ class AutoClickService : AccessibilityService() {
             val cropped = bitmap
             val w = cropped.width
             val h = cropped.height
-            val isRegionSelected = true
             
             Thread {
                 var debugBmp: Bitmap? = null
@@ -1099,27 +1391,22 @@ class AutoClickService : AccessibilityService() {
 
                     var isMatch = false
                     var debugMsg = ""
+                    var targetSummary = searchStrOrig
                     
                     if (node.isSmartOcr) {
-                        val parsedVal = parseNumericValue(recognizedText, node.ocrCustomSuffixes)
-                        if (parsedVal != null) {
-                            node.lastRecognizedValue = parsedVal
-                            val compareValue = if (node.ocrCompareToNodeId != null) {
-                                val otherNode = (nodes).find { it.id == node.ocrCompareToNodeId }
-                                otherNode?.lastRecognizedValue ?: node.ocrTargetValue
-                            } else {
-                                node.ocrTargetValue
-                            }
-                            isMatch = when (node.ocrOperator) {
-                                ">" -> parsedVal > compareValue
-                                "<" -> parsedVal < compareValue
-                                ">=" -> parsedVal >= compareValue
-                                "<=" -> parsedVal <= compareValue
-                                "==" -> parsedVal == compareValue
-                                "!=" -> parsedVal != compareValue
-                                else -> false
-                            }
-                            debugMsg = "Шаг ${node.id}: [Смарт OCR] Текст='$recognizedText', Число=$parsedVal. Условие: $parsedVal ${node.ocrOperator} $compareValue -> $isMatch"
+                        val allValues = parseAllNumericValues(recognizedText, node.ocrCustomSuffixes)
+                        val compareValue = if (node.ocrCompareToNodeId != null) {
+                            val otherNode = (nodes).find { it.id == node.ocrCompareToNodeId }
+                            otherNode?.lastRecognizedValue ?: node.ocrTargetValue
+                        } else {
+                            node.ocrTargetValue
+                        }
+                        val matchedVal = allValues.firstOrNull { evaluateSmartOcrCondition(it, node.ocrOperator, compareValue) } ?: allValues.firstOrNull()
+                        targetSummary = "[Умный OCR] Число ${node.ocrOperator} $compareValue (Найдено: ${if (allValues.isEmpty()) "НЕТ" else allValues.joinToString(", ")})"
+                        if (matchedVal != null) {
+                            node.lastRecognizedValue = matchedVal
+                            isMatch = evaluateSmartOcrCondition(matchedVal, node.ocrOperator, compareValue)
+                            debugMsg = "Шаг ${node.id}: [Смарт OCR] Текст='$recognizedText', Число=$matchedVal. Условие: $matchedVal ${node.ocrOperator} $compareValue -> $isMatch"
                         } else {
                             debugMsg = "Шаг ${node.id}: [Смарт OCR] Текст='$recognizedText'. Не удалось распознать число."
                         }
@@ -1136,7 +1423,7 @@ class AutoClickService : AccessibilityService() {
                         handler.post {
                             uiManager.logDebug(debugMsg)
                             val finalBmp = debugBmp ?: cropped
-                            uiManager.showOcrResultDialog(recognizedText, searchStrOrig, isMatch, finalBmp)
+                            uiManager.showOcrResultDialog(recognizedText, targetSummary, isMatch, finalBmp)
                         }
                     }
                 } catch (e: Exception) {
@@ -1169,7 +1456,7 @@ class AutoClickService : AccessibilityService() {
             
             Thread {
                 try {
-                    val searchStrOrig = node.targetText!!
+                    val searchStrOrig = node.targetText ?: ""
                     val recognizedText: String
                     var foundRect: android.graphics.Rect? = null
                     
@@ -1186,13 +1473,27 @@ class AutoClickService : AccessibilityService() {
                         if (node.ocrFullScreenClick && result != null) {
                             val searchStr = normalizeCyrillic(searchStrOrig).replace(" ", "").lowercase()
                             val maxCost = if (searchStr.length <= 3) 0 else if (searchStr.length <= 6) 1 else searchStr.length / 4
+                            val compareValue = if (node.ocrCompareToNodeId != null) {
+                                val otherNode = (nodes).find { it.id == node.ocrCompareToNodeId }
+                                otherNode?.lastRecognizedValue ?: node.ocrTargetValue
+                            } else {
+                                node.ocrTargetValue
+                            }
 
                             for (block in result.blocks) {
                                 for (line in block.contents) {
-                                    val blockText = normalizeCyrillic(line.stringValue).replace(" ", "").lowercase()
-                                    if (fuzzyContains(blockText, searchStr, maxCost)) {
-                                        foundRect = line.border
-                                        break
+                                    if (node.isSmartOcr) {
+                                        val lineVals = parseAllNumericValues(line.stringValue, node.ocrCustomSuffixes)
+                                        if (lineVals.any { evaluateSmartOcrCondition(it, node.ocrOperator, compareValue) }) {
+                                            foundRect = line.border
+                                            break
+                                        }
+                                    } else if (searchStr.isNotEmpty()) {
+                                        val blockText = normalizeCyrillic(line.stringValue).replace(" ", "").lowercase()
+                                        if (fuzzyContains(blockText, searchStr, maxCost)) {
+                                            foundRect = line.border
+                                            break
+                                        }
                                     }
                                 }
                                 if (foundRect != null) break
@@ -1210,25 +1511,18 @@ class AutoClickService : AccessibilityService() {
                     var debugMsg = ""
                     
                     if (node.isSmartOcr) {
-                        val parsedVal = parseNumericValue(recognizedText, node.ocrCustomSuffixes)
-                        if (parsedVal != null) {
-                            node.lastRecognizedValue = parsedVal
-                            val compareValue = if (node.ocrCompareToNodeId != null) {
-                                val otherNode = (nodes).find { it.id == node.ocrCompareToNodeId }
-                                otherNode?.lastRecognizedValue ?: node.ocrTargetValue
-                            } else {
-                                node.ocrTargetValue
-                            }
-                            isMatch = when (node.ocrOperator) {
-                                ">" -> parsedVal > compareValue
-                                "<" -> parsedVal < compareValue
-                                ">=" -> parsedVal >= compareValue
-                                "<=" -> parsedVal <= compareValue
-                                "==" -> parsedVal == compareValue
-                                "!=" -> parsedVal != compareValue
-                                else -> false
-                            }
-                            debugMsg = "Шаг ${node.id}: [Смарт OCR] Текст='$recognizedText', Число=$parsedVal. Условие: $parsedVal ${node.ocrOperator} $compareValue -> $isMatch"
+                        val allValues = parseAllNumericValues(recognizedText, node.ocrCustomSuffixes)
+                        val compareValue = if (node.ocrCompareToNodeId != null) {
+                            val otherNode = (nodes).find { it.id == node.ocrCompareToNodeId }
+                            otherNode?.lastRecognizedValue ?: node.ocrTargetValue
+                        } else {
+                            node.ocrTargetValue
+                        }
+                        val matchedVal = allValues.firstOrNull { evaluateSmartOcrCondition(it, node.ocrOperator, compareValue) } ?: allValues.firstOrNull()
+                        if (matchedVal != null) {
+                            node.lastRecognizedValue = matchedVal
+                            isMatch = evaluateSmartOcrCondition(matchedVal, node.ocrOperator, compareValue)
+                            debugMsg = "Шаг ${node.id}: [Смарт OCR] Текст='$recognizedText', Число=$matchedVal. Условие: $matchedVal ${node.ocrOperator} $compareValue -> $isMatch"
                         } else {
                             debugMsg = "Шаг ${node.id}: [Смарт OCR] Текст='$recognizedText'. Не удалось распознать число."
                         }
@@ -1249,13 +1543,14 @@ class AutoClickService : AccessibilityService() {
                     
                     if (isRegionSelected && !cropped.isRecycled) cropped.recycle()
                     
-                    if (isMatch && node.ocrFullScreenClick && foundRect != null) {
-                        val clickX = left + foundRect.centerX()
-                        val clickY = top + foundRect.centerY()
-                        performGlobalClick(clickX.toFloat(), clickY.toFloat(), node.clickDurationMs)
+                    val finalResult = if (node.isSmartOcr) isMatch else if (node.colorOperator == "!=") !isMatch else isMatch
+                    if (finalResult && node.ocrFullScreenClick && foundRect != null) {
+                        val scaleFactor = if (w < 150 || h < 150) 2f else 1.5f
+                        val clickX = left + (foundRect.centerX() / scaleFactor)
+                        val clickY = top + (foundRect.centerY() / scaleFactor)
+                        performGlobalClick(clickX, clickY, node.clickDurationMs)
                     }
                     
-                    val finalResult = if (node.colorOperator == "!=") !isMatch else isMatch
                     handler.post { callback(finalResult) }
                 } catch (e: Exception) {
                     if (isRegionSelected && !cropped.isRecycled) cropped.recycle()
@@ -1272,99 +1567,245 @@ class AutoClickService : AccessibilityService() {
         }
     }
 
+    private fun ensureTemplateCached(node: TargetNode, screenW: Int, screenH: Int): Boolean {
+        if (node.cachedTargetBitmap != null && node.cachedTargetPixels != null && node.cachedTargetW > 0 && node.cachedTargetH > 0) {
+            return true
+        }
+        val b64 = node.targetImageBase64 ?: return false
+        return try {
+            val bytes = android.util.Base64.decode(b64, android.util.Base64.DEFAULT)
+            var bmp = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return false
+            if (bmp.width > screenW || bmp.height > screenH) {
+                val scale = minOf(screenW.toFloat() / bmp.width, screenH.toFloat() / bmp.height)
+                val sw = maxOf(1, (bmp.width * scale).toInt())
+                val sh = maxOf(1, (bmp.height * scale).toInt())
+                val resized = Bitmap.createScaledBitmap(bmp, sw, sh, true)
+                if (resized != bmp) bmp.recycle()
+                bmp = resized
+            }
+            val w = bmp.width
+            val h = bmp.height
+            val px = IntArray(w * h)
+            bmp.getPixels(px, 0, w, 0, 0, w, h)
+            node.cachedTargetBitmap = bmp
+            node.cachedTargetPixels = px
+            node.cachedTargetW = w
+            node.cachedTargetH = h
+            true
+        } catch (e: Exception) {
+            e.printStackTrace()
+            false
+        }
+    }
+
+    private fun searchTemplateInBitmap(node: TargetNode, bitmap: Bitmap): Pair<Boolean, Float> {
+        if (!ensureTemplateCached(node, bitmap.width, bitmap.height)) return Pair(false, 0f)
+        val origW = node.cachedTargetW
+        val origH = node.cachedTargetH
+        val pTarget = node.cachedTargetPixels ?: return Pair(false, 0f)
+        if (origW <= 0 || origH <= 0 || origW > bitmap.width || origH > bitmap.height) return Pair(false, 0f)
+
+        val r = node.searchRadius.coerceAtLeast(0)
+        val searchRectLeft: Int
+        val searchRectTop: Int
+        val searchRectRight: Int
+        val searchRectBottom: Int
+
+        if (node.imageFullScreenSearch) {
+            searchRectLeft = 0
+            searchRectTop = 0
+            searchRectRight = bitmap.width
+            searchRectBottom = bitmap.height
+        } else {
+            val startX = node.textZoneStartX
+            val startY = node.textZoneStartY
+            val endX = node.textZoneEndX
+            val endY = node.textZoneEndY
+            val hasZone = !(startX == 0 && startY == 0 && endX == 0 && endY == 0)
+
+            var baseLeft: Int
+            var baseTop: Int
+            var baseRight: Int
+            var baseBottom: Int
+
+            if (hasZone) {
+                baseLeft = minOf(startX, endX)
+                baseTop = minOf(startY, endY)
+                baseRight = maxOf(startX, endX)
+                baseBottom = maxOf(startY, endY)
+                // If imported template is larger than current zone, expand around zone center to fit template
+                if (baseRight - baseLeft < origW) {
+                    val cx = (baseLeft + baseRight) / 2
+                    baseLeft = cx - origW / 2
+                    baseRight = baseLeft + origW
+                }
+                if (baseBottom - baseTop < origH) {
+                    val cy = (baseTop + baseBottom) / 2
+                    baseTop = cy - origH / 2
+                    baseBottom = baseTop + origH
+                }
+            } else {
+                baseLeft = node.x - origW / 2
+                baseTop = node.y - origH / 2
+                baseRight = baseLeft + origW
+                baseBottom = baseTop + origH
+            }
+
+            // Add small 2px margin even when r == 0 so minor sub-pixel shifts don't fail
+            val effR = maxOf(r, 2)
+            searchRectLeft = (baseLeft - effR).coerceIn(0, bitmap.width - origW)
+            searchRectTop = (baseTop - effR).coerceIn(0, bitmap.height - origH)
+            searchRectRight = (baseRight + effR).coerceIn(searchRectLeft + origW, bitmap.width)
+            searchRectBottom = (baseBottom + effR).coerceIn(searchRectTop + origH, bitmap.height)
+        }
+
+        val sW = searchRectRight - searchRectLeft
+        val sH = searchRectBottom - searchRectTop
+        if (sW < origW || sH < origH) return Pair(false, 0f)
+
+        val pSearch = IntArray(sW * sH)
+        bitmap.getPixels(pSearch, 0, sW, searchRectLeft, searchRectTop, sW, sH)
+
+        val baseStep = (1f / node.checkResolutionScale.coerceIn(0.1f, 1.0f)).toInt().coerceAtLeast(1)
+        // Cap template sample points at ~450 for fast execution even on large templates
+        val densityStep = Math.sqrt((origW * origH) / 450.0).toInt().coerceAtLeast(1)
+        val checkStep = maxOf(baseStep, densityStep)
+
+        var totalPixelsChecked = 0
+        var tyCount = 0
+        while (tyCount < origH) {
+            var txCount = 0
+            while (txCount < origW) {
+                totalPixelsChecked++
+                txCount += checkStep
+            }
+            tyCount += checkStep
+        }
+        if (totalPixelsChecked == 0) return Pair(false, 0f)
+
+        val tol = node.colorTolerance
+        val targetThreshold = node.imageThreshold.coerceIn(1f, 100f)
+
+        fun evaluateAt(dx: Int, dy: Int, requiredPct: Float): Float {
+            val maxMismatches = (((100f - requiredPct) / 100f) * totalPixelsChecked).toInt() + 1
+            var mismatches = 0
+            var ty = 0
+            while (ty < origH) {
+                val tgtOffset = ty * origW
+                val srcOffset = (dy + ty) * sW + dx
+                var tx = 0
+                while (tx < origW) {
+                    val c1 = pSearch[srcOffset + tx]
+                    val c2 = pTarget[tgtOffset + tx]
+                    val rDiff = Math.abs(((c1 shr 16) and 0xFF) - ((c2 shr 16) and 0xFF))
+                    val gDiff = Math.abs(((c1 shr 8) and 0xFF) - ((c2 shr 8) and 0xFF))
+                    val bDiff = Math.abs((c1 and 0xFF) - (c2 and 0xFF))
+                    if (rDiff > tol || gDiff > tol || bDiff > tol) {
+                        mismatches++
+                        if (mismatches > maxMismatches) return 0f // Early exit!
+                    }
+                    tx += checkStep
+                }
+                ty += checkStep
+            }
+            return ((totalPixelsChecked - mismatches).toFloat() / totalPixelsChecked) * 100f
+        }
+
+        val maxX = sW - origW
+        val maxY = sH - origH
+        val totalPositions = (maxX + 1).toLong() * (maxY + 1).toLong()
+        var bestPct = 0f
+
+        if (totalPositions <= 900L) {
+            val step = if (totalPositions <= 225L) 1 else 2
+            var dy = 0
+            while (dy <= maxY) {
+                var dx = 0
+                while (dx <= maxX) {
+                    val pct = evaluateAt(dx, dy, targetThreshold)
+                    if (pct > bestPct) bestPct = pct
+                    if (pct >= targetThreshold) {
+                        node.lastFoundCenterX = searchRectLeft + dx + origW / 2
+                        node.lastFoundCenterY = searchRectTop + dy + origH / 2
+                        return Pair(true, pct)
+                    }
+                    dx += step
+                }
+                dy += step
+            }
+        } else {
+            // Coarse-to-Fine search for large area / full screen
+            val coarseStep = maxOf(2, minOf(origW, origH) / 4).coerceIn(2, 6)
+            val coarseThreshold = maxOf(45f, targetThreshold - 22f)
+            var dy = 0
+            while (dy <= maxY) {
+                var dx = 0
+                while (dx <= maxX) {
+                    val coarsePct = evaluateAt(dx, dy, coarseThreshold)
+                    if (coarsePct > bestPct) bestPct = coarsePct
+                    if (coarsePct >= targetThreshold) {
+                        node.lastFoundCenterX = searchRectLeft + dx + origW / 2
+                        node.lastFoundCenterY = searchRectTop + dy + origH / 2
+                        return Pair(true, coarsePct)
+                    } else if (coarsePct >= coarseThreshold) {
+                        // Fine refinement around candidate
+                        val minFy = maxOf(0, dy - coarseStep + 1)
+                        val maxFy = minOf(maxY, dy + coarseStep - 1)
+                        val minFx = maxOf(0, dx - coarseStep + 1)
+                        val maxFx = minOf(maxX, dx + coarseStep - 1)
+                        for (fdy in minFy..maxFy) {
+                            for (fdx in minFx..maxFx) {
+                                val finePct = evaluateAt(fdx, fdy, targetThreshold)
+                                if (finePct > bestPct) bestPct = finePct
+                                if (finePct >= targetThreshold) {
+                                    node.lastFoundCenterX = searchRectLeft + fdx + origW / 2
+                                    node.lastFoundCenterY = searchRectTop + fdy + origH / 2
+                                    return Pair(true, finePct)
+                                }
+                            }
+                        }
+                    }
+                    dx += coarseStep
+                }
+                dy += coarseStep
+            }
+        }
+
+        return Pair(false, bestPct)
+    }
+
+    fun testImageFragmentSearch(node: TargetNode) {
+        if (node.targetImageBase64 == null) {
+            handler.post { Toast.makeText(this, "Сначала захватите или загрузите шаблон изображения", Toast.LENGTH_SHORT).show() }
+            return
+        }
+        requestScreenshot { bitmap ->
+            if (bitmap == null) {
+                handler.post { Toast.makeText(this, "Не удалось получить снимок экрана", Toast.LENGTH_SHORT).show() }
+                return@requestScreenshot
+            }
+            val t0 = System.currentTimeMillis()
+            val (found, bestPct) = searchTemplateInBitmap(node, bitmap)
+            val dt = System.currentTimeMillis() - t0
+            val finalMatch = if (node.colorOperator == "!=") !found else found
+            val msg = if (found) {
+                "Фрагмент НАЙДЕН (${String.format("%.1f", bestPct)}%) в точке (${node.lastFoundCenterX}, ${node.lastFoundCenterY}) за ${dt}мс. Итог условия: $finalMatch"
+            } else {
+                "Фрагмент НЕ найден (порог ${node.imageThreshold}%, время ${dt}мс). Итог условия: $finalMatch"
+            }
+            handler.post {
+                if (::uiManager.isInitialized) uiManager.logDebug("Шаг ${node.id}: [Тест Фрагмента] $msg")
+                Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
     private fun checkNodeCondition(node: TargetNode, bitmap: Bitmap): Boolean {
         if (node.triggerMode == 1) {
             if (node.targetImageBase64 != null) {
                 try {
-                    var targetBmp = node.cachedTargetBitmap
-                    if (targetBmp == null) {
-                        val bytes = android.util.Base64.decode(node.targetImageBase64, android.util.Base64.DEFAULT)
-                        targetBmp = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                        node.cachedTargetBitmap = targetBmp
-                    }
-                    if (targetBmp != null) {
-                        val startX = node.textZoneStartX
-                        val startY = node.textZoneStartY
-                        val endX = node.textZoneEndX
-                        val endY = node.textZoneEndY
-                        
-                        val tgtLeft = minOf(startX, endX).coerceIn(0, bitmap.width - 1)
-                        val tgtTop = minOf(startY, endY).coerceIn(0, bitmap.height - 1)
-                        val tgtRight = maxOf(startX, endX).coerceIn(0, bitmap.width - 1)
-                        val tgtBottom = maxOf(startY, endY).coerceIn(0, bitmap.height - 1)
-                        val origW = tgtRight - tgtLeft
-                        val origH = tgtBottom - tgtTop
-                        
-                        if (origW <= 0 || origH <= 0) {
-                            return false
-                        }
-                        
-                        val scaledTarget = if (targetBmp.width != origW || targetBmp.height != origH) {
-                            Bitmap.createScaledBitmap(targetBmp, origW, origH, true)
-                        } else targetBmp
-                        
-                        val total = origW * origH
-                        val pTarget = IntArray(total)
-                        scaledTarget.getPixels(pTarget, 0, origW, 0, 0, origW, origH)
-                        
-                        val r = node.searchRadius
-                        val searchRectLeft = (tgtLeft - r).coerceIn(0, bitmap.width - 1)
-                        val searchRectTop = (tgtTop - r).coerceIn(0, bitmap.height - 1)
-                        val searchRectRight = (tgtRight + r).coerceIn(0, bitmap.width - 1)
-                        val searchRectBottom = (tgtBottom + r).coerceIn(0, bitmap.height - 1)
-                        val sW = searchRectRight - searchRectLeft
-                        val sH = searchRectBottom - searchRectTop
-                        
-                        var found = false
-                        
-                        if (sW >= origW && sH >= origH) {
-                            val pSearch = IntArray(sW * sH)
-                            bitmap.getPixels(pSearch, 0, sW, searchRectLeft, searchRectTop, sW, sH)
-                            
-                            val checkStep = (1f / node.checkResolutionScale.coerceIn(0.1f, 1.0f)).toInt().coerceAtLeast(1)
-                            val step = maxOf(if (r > 10) 2 else 1, checkStep / 2).coerceAtLeast(1)
-                            val maxY = sH - origH
-                            val maxX = sW - origW
-                            
-                            var totalPixelsChecked = 0
-                            for (ty in 0 until origH step checkStep) {
-                                for (tx in 0 until origW step checkStep) {
-                                    totalPixelsChecked++
-                                }
-                            }
-                            
-                            for (dy in 0..maxY step step) {
-                                for (dx in 0..maxX step step) {
-                                    var matchCount = 0
-                                    for (ty in 0 until origH step checkStep) {
-                                        val tgtOffset = ty * origW
-                                        val srcOffset = (dy + ty) * sW + dx
-                                        for (tx in 0 until origW step checkStep) {
-                                            val c1 = pSearch[srcOffset + tx]
-                                            val c2 = pTarget[tgtOffset + tx]
-                                            val rDiff = Math.abs(android.graphics.Color.red(c1) - android.graphics.Color.red(c2))
-                                            val gDiff = Math.abs(android.graphics.Color.green(c1) - android.graphics.Color.green(c2))
-                                            val bDiff = Math.abs(android.graphics.Color.blue(c1) - android.graphics.Color.blue(c2))
-                                            if (rDiff <= node.colorTolerance && gDiff <= node.colorTolerance && bDiff <= node.colorTolerance) {
-                                                matchCount++
-                                            }
-                                        }
-                                    }
-                                    val matchPercent = (matchCount.toFloat() / totalPixelsChecked) * 100f
-                                    if (matchPercent >= node.imageThreshold) {
-                                        found = true
-                                        break
-                                    }
-                                }
-                                if (found) break
-                            }
-                        }
-                        
-                        if (scaledTarget != targetBmp) scaledTarget.recycle()
-                        // Do not recycle targetBmp since it is cached
-                        
-                        return if (node.colorOperator == "!=") !found else found
-                    }
+                    val (found, _) = searchTemplateInBitmap(node, bitmap)
+                    return if (node.colorOperator == "!=") !found else found
                 } catch(e: Exception) {
                     e.printStackTrace()
                 }
@@ -1405,21 +1846,71 @@ class AutoClickService : AccessibilityService() {
             
             if (node.dynamicColorUpdate) {
                 val color = bitmap.getPixel(cx, cy)
-                if (node.targetColor == null) {
-                    node.targetColor = color // save initial state
-                    return false // acts as setup delay, wait for next cycle to actually check change
+                val now = System.currentTimeMillis()
+                val lookback = node.dynamicColorLookbackMs
+
+                if (lookback > 0L) {
+                    if (node.colorHistory.isEmpty()) {
+                        node.colorHistory.addLast(Pair(now, color))
+                        node.targetColor = color
+                        return false
+                    }
+                    // Keep history entries within lookback window, retaining the entry closest to (now - lookback) at the front
+                    while (node.colorHistory.size >= 2) {
+                        val first = node.colorHistory.removeFirst()
+                        val second = node.colorHistory.peekFirst()
+                        if (second != null && now - second.first >= lookback) {
+                            // second is also old enough to be the reference from lookbackMs ago
+                            continue
+                        } else {
+                            // keep first as the reference from >= lookbackMs ago
+                            node.colorHistory.addFirst(first)
+                            break
+                        }
+                    }
+                    val lastAdded = node.colorHistory.peekLast()
+                    if (lastAdded == null || now - lastAdded.first >= 15L) {
+                        node.colorHistory.addLast(Pair(now, color))
+                    }
+
+                    val refEntry = node.colorHistory.peekFirst()!!
+                    val c1 = refEntry.second
+                    node.targetColor = c1
+
+                    val rDiff = Math.abs(android.graphics.Color.red(c1) - android.graphics.Color.red(color))
+                    val gDiff = Math.abs(android.graphics.Color.green(c1) - android.graphics.Color.green(color))
+                    val bDiff = Math.abs(android.graphics.Color.blue(c1) - android.graphics.Color.blue(color))
+                    val isSame = rDiff <= node.colorTolerance && gDiff <= node.colorTolerance && bDiff <= node.colorTolerance
+
+                    val result = if (node.colorOperator == "!=") {
+                        !isSame
+                    } else {
+                        // For "==", require that the color remained stable for the full lookback window
+                        isSame && (now - refEntry.first >= lookback)
+                    }
+
+                    if (result) {
+                        // Reset baseline to the new color after triggering so it tracks the next change
+                        node.colorHistory.clear()
+                        node.colorHistory.addLast(Pair(now, color))
+                        node.targetColor = color
+                    }
+                    return result
+                } else {
+                    if (node.targetColor == null) {
+                        node.targetColor = color // save initial state
+                        return false // wait for next cycle to compare
+                    }
+                    val c1 = node.targetColor!!
+                    val rDiff = Math.abs(android.graphics.Color.red(c1) - android.graphics.Color.red(color))
+                    val gDiff = Math.abs(android.graphics.Color.green(c1) - android.graphics.Color.green(color))
+                    val bDiff = Math.abs(android.graphics.Color.blue(c1) - android.graphics.Color.blue(color))
+                    val isSame = rDiff <= node.colorTolerance && gDiff <= node.colorTolerance && bDiff <= node.colorTolerance
+
+                    val result = if (node.colorOperator == "!=") !isSame else isSame
+                    node.targetColor = color // always memorize current color for next cycle comparison
+                    return result
                 }
-                val c1 = node.targetColor!!
-                val rDiff = Math.abs(android.graphics.Color.red(c1) - android.graphics.Color.red(color))
-                val gDiff = Math.abs(android.graphics.Color.green(c1) - android.graphics.Color.green(color))
-                val bDiff = Math.abs(android.graphics.Color.blue(c1) - android.graphics.Color.blue(color))
-                val found = rDiff <= node.colorTolerance && gDiff <= node.colorTolerance && bDiff <= node.colorTolerance
-                
-                val result = if (node.colorOperator == "!=") !found else found
-                if (!found) {
-                    node.targetColor = color // update tracked color
-                }
-                return result
             }
             
             if (node.targetColor != null) {
@@ -1550,19 +2041,15 @@ class AutoClickService : AccessibilityService() {
             }
 
             val drawingView = object : android.view.View(context) {
-                private val overlayPathCache = android.graphics.Path()
+                private val locCache = IntArray(2)
                 override fun onDraw(canvas: android.graphics.Canvas) {
                     super.onDraw(canvas)
-                    if (isDragging && swipePoints.size >= 2) {
-                        overlayPathCache.reset()
-                        overlayPathCache.moveTo(swipePoints[0].first, swipePoints[0].second)
-                        for (i in 1 until swipePoints.size) {
-                            overlayPathCache.lineTo(swipePoints[i].first, swipePoints[i].second)
-                        }
-                        overlayPathCache.lineTo(dragX, dragY)
-                        canvas.drawPath(overlayPathCache, paint)
-                    } else if (isDragging) {
-                        canvas.drawLine(recordDownX, recordDownY, dragX, dragY, paint)
+                    if (isDragging && swipePoints.isNotEmpty()) {
+                        getLocationOnScreen(locCache)
+                        val firstX = swipePoints[0].first - locCache[0]
+                        val firstY = swipePoints[0].second - locCache[1]
+                        val path = buildSmoothSwipePath(firstX, firstY, swipePoints)
+                        canvas.drawPath(path, paint)
                     }
                 }
             }
@@ -1591,7 +2078,7 @@ class AutoClickService : AccessibilityService() {
                         dragY = event.y
                         isDragging = true
                         swipePoints.clear()
-                        swipePoints.add(Pair(event.x, event.y))
+                        swipePoints.add(Pair(event.rawX, event.rawY))
                         drawingView.invalidate()
                         recordDownTime = currentTime
 
@@ -1604,14 +2091,14 @@ class AutoClickService : AccessibilityService() {
                         dragX = event.x
                         dragY = event.y
                         val last = swipePoints.lastOrNull()
-                        if (last == null || Math.hypot((event.x - last.first).toDouble(), (event.y - last.second).toDouble()) > 10) {
-                            swipePoints.add(Pair(event.x, event.y))
+                        if (last == null || Math.hypot((event.rawX - last.first).toDouble(), (event.rawY - last.second).toDouble()) > 8) {
+                            swipePoints.add(Pair(event.rawX, event.rawY))
                         }
                         drawingView.invalidate()
                     }
                     android.view.MotionEvent.ACTION_UP -> {
                         isDragging = false
-                        swipePoints.add(Pair(event.x, event.y))
+                        swipePoints.add(Pair(event.rawX, event.rawY))
                         drawingView.invalidate()
                         val duration = System.currentTimeMillis() - recordDownTime
                         val startX = recordDownX
@@ -1622,20 +2109,14 @@ class AutoClickService : AccessibilityService() {
                         android.os.Handler(android.os.Looper.getMainLooper()).post {
                             val dx = upX - startX
                             val dy = upY - startY
-                            val isSwipe = Math.hypot(dx.toDouble(), dy.toDouble()) > 10
+                            val isSwipe = Math.hypot(dx.toDouble(), dy.toDouble()) > 10 || swipePoints.size > 4
                             
-                            val path = android.graphics.Path().apply {
-                                if (isSwipe && swipePoints.size >= 2) {
+                            val path = if (isSwipe && swipePoints.size >= 2) {
+                                buildSmoothSwipePath(startX, startY, swipePoints)
+                            } else {
+                                android.graphics.Path().apply {
                                     moveTo(startX, startY)
-                                    for (i in 1 until swipePoints.size) {
-                                        // Mapping visual local coords back to global raw coords for correct gesture execution
-                                        val pX = startX + (swipePoints[i].first - swipePoints[0].first)
-                                        val pY = startY + (swipePoints[i].second - swipePoints[0].second)
-                                        lineTo(pX, pY)
-                                    }
-                                } else {
-                                    moveTo(startX, startY)
-                                    if (isSwipe) lineTo(upX, upY)
+                                    if (isSwipe) lineTo(upX, upY) else lineTo(startX + 1f, startY + 1f)
                                 }
                             }
                             val gestureDur = if (isSwipe) Math.max(duration, 30L) else Math.max(duration, 10L)
@@ -1669,8 +2150,8 @@ class AutoClickService : AccessibilityService() {
                             lastRecordDownTime = recordDownTime
                             
                             if (::uiManager.isInitialized) {
-                                uiManager.logDebug("[Запись] Создана метка ${node.id} (${if (isSwipe) "Свайп" else "Клик"})")
-                                uiManager.invalidateLines() // If we add lines drawing later
+                                uiManager.logDebug("[Запись] Создана метка ${node.id} (${if (isSwipe) "Свайп (${swipePoints.size} тчк)" else "Клик"})")
+                                uiManager.invalidateLines()
                             }
 
                             recordOverlay?.post({
@@ -1706,6 +2187,154 @@ class AutoClickService : AccessibilityService() {
         )
         (getSystemService(android.content.Context.WINDOW_SERVICE) as android.view.WindowManager).addView(recordOverlay, params)
         uiManager.bringControlBarToFront()
+    }
+
+    fun startSingleSwipeRecording(node: TargetNode, onFinished: () -> Unit) {
+        val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        val recordedPts = mutableListOf<Pair<Float, Float>>()
+        var downTimeMs = 0L
+
+        val container = android.widget.FrameLayout(this)
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT
+        )
+
+        val canvasView = object : View(this) {
+            private val pathPaint = android.graphics.Paint().apply {
+                color = android.graphics.Color.parseColor("#00E5FF")
+                strokeWidth = 8f
+                style = android.graphics.Paint.Style.STROKE
+                isAntiAlias = true
+                strokeCap = android.graphics.Paint.Cap.ROUND
+                strokeJoin = android.graphics.Paint.Join.ROUND
+                setShadowLayer(6f, 0f, 0f, android.graphics.Color.BLACK)
+            }
+            private val dotPaint = android.graphics.Paint().apply {
+                color = android.graphics.Color.parseColor("#FFEB3B")
+                style = android.graphics.Paint.Style.FILL
+                isAntiAlias = true
+            }
+            override fun onDraw(canvas: android.graphics.Canvas) {
+                super.onDraw(canvas)
+                canvas.drawColor(android.graphics.Color.parseColor("#33000000"))
+                if (recordedPts.isNotEmpty()) {
+                    val loc = IntArray(2)
+                    getLocationOnScreen(loc)
+                    val firstX = recordedPts.first().first - loc[0]
+                    val firstY = recordedPts.first().second - loc[1]
+                    if (recordedPts.size > 1) {
+                        val path = buildSmoothSwipePath(firstX, firstY, recordedPts)
+                        canvas.drawPath(path, pathPaint)
+                    }
+                    canvas.drawCircle(firstX, firstY, 12f, dotPaint)
+                    val last = recordedPts.last()
+                    canvas.drawCircle(last.first - loc[0], last.second - loc[1], 10f, dotPaint)
+                }
+            }
+        }
+
+        val banner = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+            setPadding(36, 20, 24, 20)
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(android.graphics.Color.parseColor("#EE1A1A2E"))
+                cornerRadius = 40f
+                setStroke(3, android.graphics.Color.parseColor("#00E5FF"))
+            }
+        }
+        val titleTv = android.widget.TextView(this).apply {
+            text = "✍️ Нарисуйте свайп для Метки #${node.id}"
+            setTextColor(android.graphics.Color.WHITE)
+            textSize = 14f
+            setTypeface(null, android.graphics.Typeface.BOLD)
+            setPadding(0, 0, 24, 0)
+        }
+        val cancelBtn = android.widget.Button(this).apply {
+            text = "✕ Отмена"
+            setTextColor(android.graphics.Color.WHITE)
+            textSize = 12f
+            setPadding(24, 8, 24, 8)
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(android.graphics.Color.parseColor("#C62828"))
+                cornerRadius = 24f
+            }
+            setOnClickListener {
+                try { windowManager.removeView(container) } catch (_: Exception) {}
+                onFinished()
+            }
+        }
+        banner.addView(titleTv)
+        banner.addView(cancelBtn)
+
+        val bannerParams = android.widget.FrameLayout.LayoutParams(
+            android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
+            android.widget.FrameLayout.LayoutParams.WRAP_CONTENT
+        ).apply {
+            gravity = android.view.Gravity.TOP or android.view.Gravity.CENTER_HORIZONTAL
+            topMargin = 90
+        }
+
+        canvasView.setOnTouchListener { v, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    recordedPts.clear()
+                    recordedPts.add(Pair(event.rawX, event.rawY))
+                    downTimeMs = System.currentTimeMillis()
+                    v.invalidate()
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val last = recordedPts.lastOrNull()
+                    if (last == null || Math.hypot((event.rawX - last.first).toDouble(), (event.rawY - last.second).toDouble()) >= 6.0) {
+                        recordedPts.add(Pair(event.rawX, event.rawY))
+                        v.invalidate()
+                    }
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    val upX = event.rawX
+                    val upY = event.rawY
+                    val last = recordedPts.lastOrNull()
+                    if (last == null || last.first != upX || last.second != upY) {
+                        recordedPts.add(Pair(upX, upY))
+                    }
+                    val durationMs = (System.currentTimeMillis() - downTimeMs).coerceIn(50L, 10000L)
+                    if (recordedPts.size >= 2) {
+                        node.isSwipe = true
+                        node.isHold = false
+                        node.swipeTargetNodeId = null
+                        node.x = recordedPts.first().first.toInt()
+                        node.y = recordedPts.first().second.toInt()
+                        node.swipeEndX = recordedPts.last().first.toInt()
+                        node.swipeEndY = recordedPts.last().second.toInt()
+                        node.swipePathPoints = recordedPts.toList()
+                        node.swipeDurationMs = durationMs
+                        if (::uiManager.isInitialized) {
+                            uiManager.createSwipeEndMarker(node)
+                            uiManager.updateNodeViewPosition(node)
+                            uiManager.invalidateLines()
+                            uiManager.logDebug("Шаг ${node.id}: записана траектория (${recordedPts.size} точек, ${durationMs}мс)")
+                        }
+                    }
+                    try { windowManager.removeView(container) } catch (_: Exception) {}
+                    onFinished()
+                    true
+                }
+                else -> false
+            }
+        }
+
+        container.addView(canvasView, android.widget.FrameLayout.LayoutParams(
+            android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+            android.widget.FrameLayout.LayoutParams.MATCH_PARENT
+        ))
+        container.addView(banner, bannerParams)
+        windowManager.addView(container, params)
     }
 
     private fun hideRecordOverlay() {
@@ -1774,7 +2403,7 @@ class AutoClickService : AccessibilityService() {
             }
         }
         if (list.isEmpty()) {
-            getSavedProfiles().take(5).forEach { list.add(Pair(it, it)) }
+            getSavedProfiles().filter { it != "Автосохранение" && !it.startsWith("AutoSave /") }.take(5).forEach { list.add(Pair(it, it)) }
         }
         return list
     }
@@ -1793,7 +2422,9 @@ class AutoClickService : AccessibilityService() {
 
     fun getSavedProfiles(): List<String> {
         val prefs = getSharedPreferences("AutoClickerProfiles", android.content.Context.MODE_PRIVATE)
-        return prefs.all.keys.toList()
+        return prefs.all.keys
+            .filter { !it.startsWith("AutoSave /") }
+            .sortedWith(compareBy<String> { it != "Автосохранение" }.thenBy { it })
     }
 
     fun deleteProfile(name: String) {
@@ -1804,6 +2435,10 @@ class AutoClickService : AccessibilityService() {
 
     fun autoSave() {
         val prefs = getSharedPreferences("AutoClickerProfiles", android.content.Context.MODE_PRIVATE)
+        if (nodes.isEmpty()) {
+            prefs.edit().remove("Автосохранение").apply()
+            return
+        }
         val obj = org.json.JSONObject()
         val metrics = resources.displayMetrics
         obj.put("screenWidth", metrics.widthPixels)
@@ -1895,22 +2530,25 @@ class AutoClickService : AccessibilityService() {
         if (!append) {
             isPlaying = false
             nodes.clear()
-            uiManager.nodeViews.values.forEach { uiManager.windowManager.removeView(it) }
+            uiManager.nodeViews.values.forEach { try { uiManager.windowManager.removeView(it) } catch (_: Exception) {} }
             uiManager.nodeViews.clear()
             uiManager.nodeParams.clear()
-            uiManager.swipeEndViews.values.forEach { uiManager.windowManager.removeView(it) }
+            uiManager.swipeEndViews.values.forEach { try { uiManager.windowManager.removeView(it) } catch (_: Exception) {} }
             uiManager.swipeEndViews.clear()
             uiManager.swipeEndParams.clear()
-            uiManager.textZoneStartViews.values.forEach { uiManager.windowManager.removeView(it) }
+            uiManager.textZoneStartViews.values.forEach { try { uiManager.windowManager.removeView(it) } catch (_: Exception) {} }
             uiManager.textZoneStartViews.clear()
             uiManager.textZoneStartParams.clear()
-            uiManager.textZoneEndViews.values.forEach { uiManager.windowManager.removeView(it) }
+            uiManager.textZoneEndViews.values.forEach { try { uiManager.windowManager.removeView(it) } catch (_: Exception) {} }
             uiManager.textZoneEndViews.clear()
             uiManager.textZoneEndParams.clear()
+            uiManager.colorCompareViews.values.forEach { try { uiManager.windowManager.removeView(it) } catch (_: Exception) {} }
+            uiManager.colorCompareViews.clear()
+            uiManager.colorCompareParams.clear()
         }
         
         var maxId = if (nodes.isNotEmpty()) nodes.maxOf { it.id } else 0
-        val idOffset = if (append) maxId + 1 else 0
+        val idOffset = if (append) maxId else 0
         
         val newNodes = mutableListOf<TargetNode>()
         for (i in 0 until arr.length()) {
@@ -1919,8 +2557,10 @@ class AutoClickService : AccessibilityService() {
             if (scaleX != 1f || scaleY != 1f) {
                 node.x = (node.x * scaleX).toInt()
                 node.y = (node.y * scaleY).toInt()
-                if (node.swipeEndX != null) node.swipeEndX = (node.swipeEndX!! * scaleX).toInt()
-                if (node.swipeEndY != null) node.swipeEndY = (node.swipeEndY!! * scaleY).toInt()
+                node.swipeEndX = (node.swipeEndX * scaleX).toInt()
+                node.swipeEndY = (node.swipeEndY * scaleY).toInt()
+                if (node.colorCompareX != null) node.colorCompareX = (node.colorCompareX!! * scaleX).toInt()
+                if (node.colorCompareY != null) node.colorCompareY = (node.colorCompareY!! * scaleY).toInt()
                 node.textZoneStartX = (node.textZoneStartX * scaleX).toInt()
                 node.textZoneStartY = (node.textZoneStartY * scaleY).toInt()
                 node.textZoneEndX = (node.textZoneEndX * scaleX).toInt()
@@ -1937,10 +2577,26 @@ class AutoClickService : AccessibilityService() {
 
             if (append) {
                 node.id += idOffset
-                if (node.swipeTargetNodeId != null && node.swipeTargetNodeId!! >= 0) node.swipeTargetNodeId = node.swipeTargetNodeId!! + idOffset
-                if (node.nextNodeIdOnSuccess != null) node.nextNodeIdOnSuccess = node.nextNodeIdOnSuccess!! + idOffset
-                if (node.nextNodeIdOnFail != null) node.nextNodeIdOnFail = node.nextNodeIdOnFail!! + idOffset
-                if (node.linkedConditionNodeId != null) node.linkedConditionNodeId = node.linkedConditionNodeId!! + idOffset
+                if (node.swipeTargetNodeId != null && node.swipeTargetNodeId!! > 0) node.swipeTargetNodeId = node.swipeTargetNodeId!! + idOffset
+                if (node.nextNodeIdOnSuccess != null && node.nextNodeIdOnSuccess!! > 0) node.nextNodeIdOnSuccess = node.nextNodeIdOnSuccess!! + idOffset
+                if (node.nextNodeIdOnFail != null && node.nextNodeIdOnFail!! > 0) node.nextNodeIdOnFail = node.nextNodeIdOnFail!! + idOffset
+                if (node.linkedConditionNodeId != null && node.linkedConditionNodeId!! > 0) node.linkedConditionNodeId = node.linkedConditionNodeId!! + idOffset
+                if (node.compareToNodeId != null && node.compareToNodeId!! > 0) node.compareToNodeId = node.compareToNodeId!! + idOffset
+                if (node.ocrCompareToNodeId != null && node.ocrCompareToNodeId!! > 0) node.ocrCompareToNodeId = node.ocrCompareToNodeId!! + idOffset
+                if (node.syncWithNodeIds.isNotEmpty()) {
+                    node.syncWithNodeIds = node.syncWithNodeIds.split(",")
+                        .mapNotNull { it.trim().toIntOrNull() }
+                        .map { if (it > 0) it + idOffset else it }
+                        .joinToString(",")
+                }
+                if (node.managerRoutes.isNotEmpty()) {
+                    node.managerRoutes = node.managerRoutes.map { r ->
+                        ManagerRoute(
+                            checkNodeId = if (r.checkNodeId > 0) r.checkNodeId + idOffset else r.checkNodeId,
+                            onSuccessGoToId = if (r.onSuccessGoToId > 0) r.onSuccessGoToId + idOffset else r.onSuccessGoToId
+                        )
+                    }
+                }
             }
             newNodes.add(node)
             if (node.id > maxId) maxId = node.id
@@ -1951,15 +2607,20 @@ class AutoClickService : AccessibilityService() {
         
         if (append) {
             uiManager.createViewsForNodes(newNodes)
+            autoSave()
         } else {
             uiManager.recreateAllNodeViews()
         }
+        if (::uiManager.isInitialized) uiManager.invalidateLines()
     }
 
     fun loadProfile(name: String, append: Boolean = false) {
         val prefs = getSharedPreferences("AutoClickerProfiles", android.content.Context.MODE_PRIVATE)
         val jsonString = prefs.getString(name, null) ?: return
         try {
+            if (!append && name != "Автосохранение" && nodes.isNotEmpty()) {
+                autoSave()
+            }
             loadProfileFromJson(jsonString, append)
             android.widget.Toast.makeText(this, "Сценарий '$name' ${if(append) "добавлен" else "загружен"}", android.widget.Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {

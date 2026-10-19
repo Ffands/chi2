@@ -464,149 +464,289 @@ class UIManager(private val service: AutoClickService) {
                 layoutParams = params
                 
                 setOnClickListener {
-                    val df = java.text.SimpleDateFormat("HH-mm-ss", java.util.Locale.getDefault())
-                    val autoSaveName = "AutoSave / " + df.format(java.util.Date())
-                    service.saveProfile(autoSaveName)
-                    
                     service.loadProfile(p.first)
                     service.uiManager.updateMenu()
-                    android.widget.Toast.makeText(service, "Автосохранено '$autoSaveName'. Загружен: ${p.first}", android.widget.Toast.LENGTH_LONG).show()
                 }
             }
             container.addView(btn)
         }
     }
+    private var isHudMinimized = false
+
+    private fun showQuickAddNodeDialog() {
+        val items = arrayOf(
+            "🎯 Метка (Клик / Свайп / Удержание)",
+            "👁 Триггер (Проверка условия)",
+            "🔀 Менеджер (Ветвление условий)",
+            "⚡ Вызов скрипта (Подмакрос)",
+            "🌳 Открыть Древо сценария"
+        )
+        val dialog = android.app.AlertDialog.Builder(service, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("Быстрое действие")
+            .setItems(items) { _, which ->
+                val metrics = service.resources.displayMetrics
+                val offset = (service.nodes.size % 6) * dpToPx(18)
+                val cx = (metrics.widthPixels / 2 + offset).coerceIn(dpToPx(40), metrics.widthPixels - dpToPx(40))
+                val cy = (metrics.heightPixels / 2 + offset).coerceIn(dpToPx(40), metrics.heightPixels - dpToPx(40))
+                when (which) {
+                    0 -> addNode(NodeType.CLICK, cx, cy)
+                    1 -> addNode(NodeType.CHECK_COLOR, cx, cy)
+                    2 -> addNode(NodeType.MANAGER, cx, cy)
+                    3 -> addNode(NodeType.MACRO, cx, cy)
+                    4 -> {
+                        if (modMenu == null || modMenu?.visibility != View.VISIBLE) {
+                            showModMenu()
+                        }
+                        showScenarioTreeMenu()
+                    }
+                }
+                recreateFloatingControlBar()
+            }
+            .setNegativeButton("Отмена", null)
+            .create()
+        dialog.window?.setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY)
+        dialog.show()
+    }
+
+    private fun showExitConfirmationDialog() {
+        val options = arrayOf(
+            "🙈 Просто скрыть панель HUD",
+            "🗑 Очистить все метки (${service.nodes.size} шт.)",
+            "❌ Закрыть HUD и очистить метки"
+        )
+        val dialog = android.app.AlertDialog.Builder(service, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("Управление панелью HUD")
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> {
+                        toggleHudVisibility()
+                        android.widget.Toast.makeText(service, "HUD скрыт (можно вернуть из приложения)", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                    1 -> {
+                        if (service.isPlaying) service.togglePlay()
+                        if (service.isRecording) service.toggleRecording()
+                        val ids = service.nodes.map { it.id }
+                        ids.forEach { removeNode(it) }
+                        recreateFloatingControlBar()
+                        android.widget.Toast.makeText(service, "Все метки очищены", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                    2 -> {
+                        if (service.isPlaying) service.togglePlay()
+                        if (service.isRecording) service.toggleRecording()
+                        service.nodes.clear()
+                        removeAllViews()
+                        floatingControlBar = null
+                        modMenu = null
+                        nodeViews.clear()
+                        swipeEndViews.clear()
+                        textZoneStartViews.clear()
+                        textZoneEndViews.clear()
+                        colorCompareViews.clear()
+                        linesOverlayView?.let { try { windowManager.removeView(it) } catch (_: Exception) {} }
+                        linesOverlayView = null
+                    }
+                }
+            }
+            .setNegativeButton("Отмена", null)
+            .create()
+        dialog.window?.setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY)
+        dialog.show()
+    }
+
     fun showFloatingControlBar() {
         if (floatingControlBar != null) {
-            floatingControlBar?.visibility = View.VISIBLE
+            floatingControlBar?.visibility = if (isHudVisible) View.VISIBLE else View.GONE
             return
         }
-        
+
+        val borderColor = when {
+            service.isPlaying -> Color.parseColor("#00E676")
+            service.isRecording -> Color.parseColor("#FF5252")
+            else -> Color.parseColor("#3D5AFE")
+        }
+
         val layout = LinearLayout(service).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dpToPx(5), dpToPx(5), dpToPx(5), dpToPx(5))
-            
+            setPadding(dpToPx(6), dpToPx(5), dpToPx(6), dpToPx(5))
+            alpha = uiAlpha
+
             val drawable = android.graphics.drawable.GradientDrawable()
-            drawable.setColor(Color.parseColor("#E61E1E1E")) // 90% opacity dark grey
-            drawable.setStroke(dpToPx(1), Color.parseColor("#333333"))
-            drawable.cornerRadius = dpToPx(12).toFloat()
+            drawable.setColor(Color.parseColor("#EE141824"))
+            drawable.setStroke(dpToPx(2), borderColor)
+            drawable.cornerRadius = dpToPx(18).toFloat()
             background = drawable
             clipToOutline = true
         }
-        
+
         val topRow = LinearLayout(service).apply {
             orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
         }
-        
+
         val hotbarRow = HorizontalScrollView(service).apply {
             visibility = View.GONE
             layoutParams = LinearLayout.LayoutParams(dpToPx(280), WindowManager.LayoutParams.WRAP_CONTENT)
-            setPadding(0, dpToPx(5), 0, 0)
+            setPadding(0, dpToPx(6), 0, dpToPx(2))
         }
         val hotbarContainer = LinearLayout(service).apply {
             orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
         }
         hotbarRow.addView(hotbarContainer)
 
+        fun styleHudButton(btn: Button, bgColor: String = "#23293A", wDp: Int = 38, hDp: Int = 38) {
+            btn.background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.parseColor(bgColor))
+                cornerRadius = dpToPx(11).toFloat()
+            }
+            btn.layoutParams = LinearLayout.LayoutParams(dpToPx(wDp), dpToPx(hDp)).apply {
+                setMargins(dpToPx(2), 0, dpToPx(2), 0)
+            }
+            btn.setPadding(0, 0, 0, 0)
+            btn.setScaledTextSize(14f)
+        }
 
         val dragHandle = Button(service).apply {
-            text = "‖"
-            setTextColor(Color.WHITE)
+            text = "⠿"
+            setTextColor(Color.parseColor("#90A4AE"))
             setBackgroundColor(Color.TRANSPARENT)
-            layoutParams = LinearLayout.LayoutParams(dpToPx(30), dpToPx(40))
+            layoutParams = LinearLayout.LayoutParams(dpToPx(26), dpToPx(38))
             setPadding(0, 0, 0, 0)
+            setScaledTextSize(16f)
         }
-        
+
+        val statusBadge = TextView(service).apply {
+            text = when {
+                service.isPlaying -> "● РАБОТА"
+                service.isRecording -> "● ЗАПИСЬ"
+                else -> "${service.nodes.size}🎯"
+            }
+            setTextColor(
+                when {
+                    service.isPlaying -> Color.parseColor("#00E676")
+                    service.isRecording -> Color.parseColor("#FF5252")
+                    else -> Color.parseColor("#B0BEC5")
+                }
+            )
+            setTypeface(null, Typeface.BOLD)
+            setScaledTextSize(11f)
+            setPadding(dpToPx(7), dpToPx(4), dpToPx(7), dpToPx(4))
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.parseColor("#1D2230"))
+                cornerRadius = dpToPx(10).toFloat()
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                setMargins(dpToPx(2), 0, dpToPx(3), 0)
+            }
+            setOnClickListener {
+                if (modMenu == null || modMenu?.visibility != View.VISIBLE) {
+                    showModMenu()
+                }
+                showScenarioTreeMenu()
+            }
+            setOnLongClickListener {
+                android.widget.Toast.makeText(service, "Нажмите для открытия Древа сценария (меток: ${service.nodes.size})", android.widget.Toast.LENGTH_SHORT).show()
+                true
+            }
+        }
+
         val playBtn = Button(service).apply {
             text = if (service.isPlaying) "⏸" else "▶"
-            setTextColor(if (service.isPlaying) Color.parseColor("#FFD50000") else Color.parseColor("#FF00C853"))
-            setBackgroundColor(Color.TRANSPARENT)
-            layoutParams = LinearLayout.LayoutParams(dpToPx(40), dpToPx(40))
-            setPadding(0, 0, 0, 0)
+            setTextColor(Color.WHITE)
+            styleHudButton(this, if (service.isPlaying) "#D32F2F" else "#00C853", 40, 38)
             setOnClickListener {
                 service.togglePlay()
-                text = if (service.isPlaying) "⏸" else "▶"
-                setTextColor(if (service.isPlaying) Color.parseColor("#FFD50000") else Color.parseColor("#FF00C853"))
             }
-
+            setOnLongClickListener {
+                android.widget.Toast.makeText(service, "Старт / Пауза макроса", android.widget.Toast.LENGTH_SHORT).show()
+                true
+            }
         }
-        
+
+        val quickAddBtn = Button(service).apply {
+            text = "➕"
+            setTextColor(Color.WHITE)
+            styleHudButton(this, "#1E88E5", 38, 38)
+            visibility = if (service.isPlaying || service.isRecording) View.GONE else View.VISIBLE
+            setOnClickListener {
+                val metrics = service.resources.displayMetrics
+                val offset = (service.nodes.size % 6) * dpToPx(18)
+                val cx = (metrics.widthPixels / 2 + offset).coerceIn(dpToPx(40), metrics.widthPixels - dpToPx(40))
+                val cy = (metrics.heightPixels / 2 + offset).coerceIn(dpToPx(40), metrics.heightPixels - dpToPx(40))
+                addNode(NodeType.CLICK, cx, cy)
+                recreateFloatingControlBar()
+            }
+            setOnLongClickListener {
+                showQuickAddNodeDialog()
+                true
+            }
+        }
+
         val recordBtn = Button(service).apply {
             text = if (service.isRecording) "■" else "🔴"
             setTextColor(if (service.isRecording) Color.parseColor("#FFD50000") else Color.WHITE)
-            setBackgroundColor(Color.TRANSPARENT)
-            layoutParams = LinearLayout.LayoutParams(dpToPx(40), dpToPx(40))
-            setPadding(0, 0, 0, 0)
+            styleHudButton(this, if (service.isRecording) "#3E1A1A" else "#23293A")
             visibility = if (appMode == AppMode.RECORD) View.VISIBLE else View.GONE
             setOnClickListener {
                 service.toggleRecording()
-                text = if (service.isRecording) "■" else "🔴"
-                setTextColor(if (service.isRecording) Color.parseColor("#FFD50000") else Color.WHITE)
+                recreateFloatingControlBar()
+            }
+            setOnLongClickListener {
+                android.widget.Toast.makeText(service, "Запись действий в реальном времени", android.widget.Toast.LENGTH_SHORT).show()
+                true
             }
         }
-        
+
+        val allVisibleNow = service.nodes.isEmpty() || service.nodes.any { it.isVisible }
         val toggleVisBtn = Button(service).apply {
-            text = "👁"
+            text = if (allVisibleNow) "👁" else "🙈"
             setTextColor(Color.WHITE)
-            setBackgroundColor(Color.TRANSPARENT)
-            layoutParams = LinearLayout.LayoutParams(dpToPx(40), dpToPx(40))
-            setPadding(0, 0, 0, 0)
+            styleHudButton(this, if (allVisibleNow) "#23293A" else "#37474F")
             visibility = if (showEyeBtn) View.VISIBLE else View.GONE
-            setOnClickListener { 
+            setOnClickListener {
+                val targetVis = service.nodes.any { !it.isVisible }
                 service.nodes.forEach {
-                    it.isVisible = !it.isVisible
+                    it.isVisible = targetVis
                     nodeViews[it.id]?.visibility = if (it.isVisible) View.VISIBLE else View.GONE
                     swipeEndViews[it.id]?.visibility = if (it.isVisible) View.VISIBLE else View.GONE
                     textZoneStartViews[it.id]?.visibility = if (it.isVisible) View.VISIBLE else View.GONE
                     textZoneEndViews[it.id]?.visibility = if (it.isVisible) View.VISIBLE else View.GONE
                     colorCompareViews[it.id]?.visibility = if (it.isVisible) View.VISIBLE else View.GONE
                 }
+                text = if (targetVis) "👁" else "🙈"
                 invalidateLines()
             }
-        }
-
-        val gearBtn = Button(service).apply {
-            text = "⚙"
-            setTextColor(Color.WHITE)
-            setBackgroundColor(Color.TRANSPARENT)
-            layoutParams = LinearLayout.LayoutParams(dpToPx(40), dpToPx(40))
-            setPadding(0, 0, 0, 0)
-            visibility = View.VISIBLE
-            setOnClickListener { showModMenu() }
-        }
-        
-        val exitBtn = Button(service).apply {
-            text = "✖"
-            setTextColor(Color.parseColor("#FFD50000"))
-            setBackgroundColor(Color.TRANSPARENT)
-            layoutParams = LinearLayout.LayoutParams(dpToPx(40), dpToPx(40))
-            setPadding(0, 0, 0, 0)
-            setOnClickListener {
-                if (service.isPlaying) service.togglePlay()
-                if (service.isRecording) service.toggleRecording()
-                service.nodes.clear()
-                removeAllViews()
-                floatingControlBar = null
-                modMenu = null
-                nodeViews.clear()
-                swipeEndViews.clear()
-                textZoneStartViews.clear()
-                textZoneEndViews.clear()
-                colorCompareViews.clear()
-                linesOverlayView?.let { try { windowManager.removeView(it) } catch(e:Exception){} }
-                linesOverlayView = null
-                // Also update main app status if needed, but the main app is likely in background.
+            setOnLongClickListener {
+                android.widget.Toast.makeText(service, "Показать / скрыть метки на экране", android.widget.Toast.LENGTH_SHORT).show()
+                true
             }
         }
-        
 
-        
+        val linesToggleBtn = Button(service).apply {
+            text = if (service.showLines) "🕸" else "🕸✖"
+            setTextColor(Color.WHITE)
+            styleHudButton(this, if (service.showLines) "#283593" else "#23293A")
+            visibility = if (showLinesBtn) View.VISIBLE else View.GONE
+            setOnClickListener {
+                service.showLines = !service.showLines
+                text = if (service.showLines) "🕸" else "🕸✖"
+                styleHudButton(this, if (service.showLines) "#283593" else "#23293A")
+                linesOverlayView?.visibility = if (service.showLines) View.VISIBLE else View.INVISIBLE
+                linesOverlayView?.invalidate()
+            }
+            setOnLongClickListener {
+                android.widget.Toast.makeText(service, "Линии маршрутов, зон и траекторий свайпов", android.widget.Toast.LENGTH_SHORT).show()
+                true
+            }
+        }
+
         val hotbarToggleBtn = Button(service).apply {
             text = "⚡"
-            setTextColor(Color.WHITE)
-            setBackgroundColor(Color.TRANSPARENT)
-            layoutParams = LinearLayout.LayoutParams(dpToPx(40), dpToPx(40))
-            setPadding(0, 0, 0, 0)
+            setTextColor(Color.parseColor("#FFD54F"))
+            styleHudButton(this)
             visibility = if (showHotbarBtn) View.VISIBLE else View.GONE
             setOnClickListener {
                 if (hotbarRow.visibility == View.VISIBLE) {
@@ -620,25 +760,40 @@ class UIManager(private val service: AutoClickService) {
                     if (p != null) windowManager.updateViewLayout(it, p)
                 }
             }
+            setOnLongClickListener {
+                showHotbarConfigDialog()
+                true
+            }
         }
-        
-        val linesToggleBtn = Button(service).apply {
-            text = "🕸"
+
+        val gearBtn = Button(service).apply {
+            text = "☰"
             setTextColor(Color.WHITE)
-            setBackgroundColor(Color.TRANSPARENT)
-            layoutParams = LinearLayout.LayoutParams(dpToPx(40), dpToPx(40))
-            setPadding(0, 0, 0, 0)
-            visibility = if (showLinesBtn) View.VISIBLE else View.GONE
+            styleHudButton(this, "#2E3B4E")
+            visibility = View.VISIBLE
+            setOnClickListener { showModMenu() }
+            setOnLongClickListener {
+                android.widget.Toast.makeText(service, "Главное меню и список меток", android.widget.Toast.LENGTH_SHORT).show()
+                true
+            }
+        }
+
+        val exitBtn = Button(service).apply {
+            text = "✖"
+            setTextColor(Color.parseColor("#FF8A80"))
+            styleHudButton(this, "#3B1E22", 34, 38)
             setOnClickListener {
-                service.showLines = !service.showLines
-                text = if (service.showLines) "🕸" else "🕸✖"
-                linesOverlayView?.visibility = if (service.showLines) View.VISIBLE else View.INVISIBLE
-                linesOverlayView?.visibility = if (service.showLines) View.VISIBLE else View.INVISIBLE; linesOverlayView?.invalidate()
+                showExitConfirmationDialog()
+            }
+            setOnLongClickListener {
+                android.widget.Toast.makeText(service, "Скрыть HUD или очистить метки", android.widget.Toast.LENGTH_SHORT).show()
+                true
             }
         }
 
         val scrollContent = LinearLayout(service).apply {
             orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
         }
         val topScroll = android.widget.HorizontalScrollView(service).apply {
             isHorizontalScrollBarEnabled = false
@@ -647,38 +802,47 @@ class UIManager(private val service: AutoClickService) {
         }
 
         val minMaxBtn = Button(service).apply {
-            text = "➖"
-            setTextColor(Color.WHITE)
-            setBackgroundColor(Color.TRANSPARENT)
-            layoutParams = LinearLayout.LayoutParams(dpToPx(40), dpToPx(40))
-            setPadding(0, 0, 0, 0)
-            
-            var isMinimized = false
+            text = if (isHudMinimized) "▸" else "◂"
+            setTextColor(Color.parseColor("#90A4AE"))
+            styleHudButton(this, "#1D2230", 28, 38)
             setOnClickListener {
-                isMinimized = !isMinimized
-                text = if (isMinimized) "➕" else "➖"
-                val vis = if (isMinimized) View.GONE else View.VISIBLE
-                playBtn.visibility = vis
-                recordBtn.visibility = if (isMinimized || appMode != AppMode.RECORD) View.GONE else View.VISIBLE
-                toggleVisBtn.visibility = if (isMinimized || !showEyeBtn) View.GONE else View.VISIBLE
-                linesToggleBtn.visibility = if (isMinimized || !showLinesBtn) View.GONE else View.VISIBLE
-                hotbarToggleBtn.visibility = if (isMinimized || !showHotbarBtn) View.GONE else View.VISIBLE
-                gearBtn.visibility = if (isMinimized) View.GONE else View.VISIBLE
+                isHudMinimized = !isHudMinimized
+                text = if (isHudMinimized) "▸" else "◂"
+                val vis = if (isHudMinimized) View.GONE else View.VISIBLE
+                statusBadge.visibility = vis
+                quickAddBtn.visibility = if (isHudMinimized || service.isPlaying || service.isRecording) View.GONE else View.VISIBLE
+                recordBtn.visibility = if (isHudMinimized || appMode != AppMode.RECORD) View.GONE else View.VISIBLE
+                toggleVisBtn.visibility = if (isHudMinimized || !showEyeBtn) View.GONE else View.VISIBLE
+                linesToggleBtn.visibility = if (isHudMinimized || !showLinesBtn) View.GONE else View.VISIBLE
+                hotbarToggleBtn.visibility = if (isHudMinimized || !showHotbarBtn) View.GONE else View.VISIBLE
+                gearBtn.visibility = vis
                 exitBtn.visibility = vis
                 topScroll.visibility = vis
-                if (isMinimized) hotbarRow.visibility = View.GONE
+                if (isHudMinimized) hotbarRow.visibility = View.GONE
                 floatingControlBar?.let {
                     val p = it.layoutParams as? WindowManager.LayoutParams
                     if (p != null) windowManager.updateViewLayout(it, p)
                 }
             }
-
+            setOnLongClickListener {
+                android.widget.Toast.makeText(service, "Свернуть / развернуть HUD (кнопка Старт остаётся доступной)", android.widget.Toast.LENGTH_SHORT).show()
+                true
+            }
         }
 
+        // Apply initial minimized state
+        if (isHudMinimized) {
+            statusBadge.visibility = View.GONE
+            quickAddBtn.visibility = View.GONE
+            topScroll.visibility = View.GONE
+            gearBtn.visibility = View.GONE
+            exitBtn.visibility = View.GONE
+        }
 
         topRow.addView(dragHandle)
-        topRow.addView(minMaxBtn)
-        scrollContent.addView(playBtn)
+        topRow.addView(playBtn)
+        topRow.addView(quickAddBtn)
+        topRow.addView(statusBadge)
         scrollContent.addView(recordBtn)
         scrollContent.addView(toggleVisBtn)
         scrollContent.addView(linesToggleBtn)
@@ -686,12 +850,16 @@ class UIManager(private val service: AutoClickService) {
         topRow.addView(topScroll)
         topRow.addView(gearBtn)
         topRow.addView(exitBtn)
-        
+        topRow.addView(minMaxBtn)
+
         layout.addView(topRow)
         layout.addView(hotbarRow)
 
         var barFlags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
         if (isCaffeineEnabled) barFlags = barFlags or WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+        val metrics = service.resources.displayMetrics
+        val safeX = hudX.coerceIn(0, (metrics.widthPixels - dpToPx(60)).coerceAtLeast(0))
+        val safeY = hudY.coerceIn(0, (metrics.heightPixels - dpToPx(60)).coerceAtLeast(0))
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -700,11 +868,10 @@ class UIManager(private val service: AutoClickService) {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = 0
-            y = 200
+            x = safeX
+            y = safeY
         }
 
-        var isMoved = false
         var initialX = 0
         var initialY = 0
         var initialTouchX = 0f
@@ -716,29 +883,34 @@ class UIManager(private val service: AutoClickService) {
                     initialY = params.y
                     initialTouchX = event.rawX
                     initialTouchY = event.rawY
-                    isMoved = false
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
                     val dx = event.rawX - initialTouchX
                     val dy = event.rawY - initialTouchY
-                    if (Math.abs(dx) > 10 || Math.abs(dy) > 10) isMoved = true
-                    val metrics = service.resources.displayMetrics
+                    val curMetrics = service.resources.displayMetrics
                     var newX = initialX + dx.toInt()
                     var newY = initialY + dy.toInt()
-                    if (newX < 0) newX = 0
-                    if (newY < 0) newY = 0
-                    if (newX > metrics.widthPixels - dpToPx(30)) newX = metrics.widthPixels - dpToPx(30)
-                    if (newY > metrics.heightPixels - dpToPx(30)) newY = metrics.heightPixels - dpToPx(30)
+                    newX = newX.coerceIn(0, (curMetrics.widthPixels - dpToPx(40)).coerceAtLeast(0))
+                    newY = newY.coerceIn(0, (curMetrics.heightPixels - dpToPx(40)).coerceAtLeast(0))
                     params.x = newX
                     params.y = newY
+                    hudX = newX
+                    hudY = newY
                     windowManager.updateViewLayout(layout, params)
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    hudX = params.x
+                    hudY = params.y
+                    saveUISettings()
                     true
                 }
                 else -> false
             }
         }
 
+        layout.visibility = if (isHudVisible) View.VISIBLE else View.GONE
         windowManager.addView(layout, params)
         floatingControlBar = layout
     }
@@ -1122,19 +1294,23 @@ class UIManager(private val service: AutoClickService) {
             setOnClickListener {
                 service.isPlaying = false
                 service.nodes.clear()
-                nodeViews.values.forEach { windowManager.removeView(it) }
+                nodeViews.values.forEach { try { windowManager.removeView(it) } catch (_: Exception) {} }
                 nodeViews.clear()
                 nodeParams.clear()
-                swipeEndViews.values.forEach { windowManager.removeView(it) }
+                swipeEndViews.values.forEach { try { windowManager.removeView(it) } catch (_: Exception) {} }
                 swipeEndViews.clear()
                 swipeEndParams.clear()
-                textZoneStartViews.values.forEach { windowManager.removeView(it) }
+                textZoneStartViews.values.forEach { try { windowManager.removeView(it) } catch (_: Exception) {} }
                 textZoneStartViews.clear()
                 textZoneStartParams.clear()
-                textZoneEndViews.values.forEach { windowManager.removeView(it) }
+                textZoneEndViews.values.forEach { try { windowManager.removeView(it) } catch (_: Exception) {} }
                 textZoneEndViews.clear()
                 textZoneEndParams.clear()
+                colorCompareViews.values.forEach { try { windowManager.removeView(it) } catch (_: Exception) {} }
+                colorCompareViews.clear()
+                colorCompareParams.clear()
                 nodeCounter = 1
+                service.autoSave()
                 updateMenu()
                 invalidateLines()
             }
@@ -1142,7 +1318,7 @@ class UIManager(private val service: AutoClickService) {
 
         val profileLayout = LinearLayout(service).apply {
             orientation = LinearLayout.HORIZONTAL
-            setPadding(0, 10, 0, 10)
+            setPadding(0, 10, 0, 5)
         }
         val saveBtn = Button(service).apply {
             text = "Сохр. План"
@@ -1154,8 +1330,14 @@ class UIManager(private val service: AutoClickService) {
             layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f)
             setOnClickListener { showProfileMenu(false) }
         }
+        val treeBtn = Button(service).apply {
+            text = "🌳 Древо"
+            layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f)
+            setOnClickListener { showScenarioTreeMenu() }
+        }
         profileLayout.addView(saveBtn)
         profileLayout.addView(loadBtn)
+        profileLayout.addView(treeBtn)
 
         layout.addView(headerRow)
         
@@ -1204,12 +1386,19 @@ class UIManager(private val service: AutoClickService) {
         service.nodes.forEach { node ->
             val row = LinearLayout(service).apply { 
                 orientation = LinearLayout.HORIZONTAL
-                setPadding(0, 10, 0, 10)
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, 6, 0, 6)
+            }
+            val typeLabel = when (node.type) {
+                NodeType.CLICK -> if (node.isSwipe) "🎯 Свайп" else "🎯 Метка"
+                NodeType.CHECK_COLOR -> "👁 Триггер"
+                NodeType.MACRO -> "⚡ Скрипт"
+                NodeType.MANAGER -> "🔀 Менеджер"
             }
             val title = TextView(service).apply {
-                text = "[${node.id}] ${if(node.type==NodeType.CLICK) "Клик" else "Пров."}"
+                text = "[${node.id}] $typeLabel"
                 setTextColor(Color.WHITE)
-                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             }
             val editBtn = Button(service).apply {
                 text = "Настр."
@@ -1230,6 +1419,184 @@ class UIManager(private val service: AutoClickService) {
         layout.addView(scroll)
 
         menuContentContainer.addView(layout)
+    }
+
+    private fun showScenarioTreeMenu() {
+        setMenuFocusable(false)
+        menuContentContainer.removeAllViews()
+        val rootLayout = LinearLayout(service).apply {
+            orientation = LinearLayout.VERTICAL
+            tag = "tree_menu"
+            setPadding(dpToPx(6), dpToPx(6), dpToPx(6), dpToPx(6))
+        }
+
+        val title = TextView(service).apply {
+            text = "🌳 Древо сценария и маршрутов"
+            setTextColor(Color.WHITE)
+            setTypeface(null, Typeface.BOLD)
+            setScaledTextSize(16f)
+            setPadding(0, dpToPx(4), 0, dpToPx(10))
+        }
+        rootLayout.addView(title)
+
+        val scroll = ScrollView(service).apply {
+            layoutParams = if (isMenuFullscreen) {
+                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
+            } else {
+                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dpToPx(320))
+            }
+        }
+        val listLayout = LinearLayout(service).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+
+        val allIds = service.nodes.map { it.id }.toSet()
+        if (service.nodes.isEmpty()) {
+            listLayout.addView(TextView(service).apply {
+                text = "Сценарий пуст. Добавьте метки для построения древа."
+                setTextColor(Color.LTGRAY)
+                setPadding(dpToPx(8), dpToPx(12), dpToPx(8), dpToPx(12))
+            })
+        } else {
+            for ((idx, node) in service.nodes.withIndex()) {
+                val card = LinearLayout(service).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(dpToPx(10), dpToPx(8), dpToPx(10), dpToPx(8))
+                    val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                    lp.setMargins(0, 0, 0, dpToPx(8))
+                    layoutParams = lp
+                    background = android.graphics.drawable.GradientDrawable().apply {
+                        setColor(Color.parseColor("#1E242B"))
+                        cornerRadius = dpToPx(8).toFloat()
+                        val borderColor = when (node.type) {
+                            NodeType.CLICK -> Color.parseColor("#EF5350")
+                            NodeType.CHECK_COLOR -> Color.parseColor("#42A5F5")
+                            NodeType.MANAGER -> Color.parseColor("#AB47BC")
+                            NodeType.MACRO -> Color.parseColor("#FFA726")
+                        }
+                        setStroke(dpToPx(1), borderColor)
+                    }
+                }
+
+                val typeTitle = when (node.type) {
+                    NodeType.CLICK -> when {
+                        node.isSwipe && node.swipePathPoints.size >= 2 -> "🎯 Метка [${node.id}] — Свайп по кривой (${node.swipePathPoints.size} тчк, ${node.swipeDurationMs} мс)"
+                        node.isSwipe -> "🎯 Метка [${node.id}] — Свайп (${node.swipeDurationMs} мс)"
+                        node.isHold -> "🎯 Метка [${node.id}] — ✋ Удержание в фоне (${node.holdDurationMs} мс)"
+                        else -> "🎯 Метка [${node.id}] — Клик (${node.clickDurationMs} мс, x${node.repetitions})"
+                    }
+                    NodeType.CHECK_COLOR -> "👁 Триггер [${node.id}] — Проверка условия"
+                    NodeType.MANAGER -> "🔀 Менеджер [${node.id}] — Маршрутизатор (${node.managerRoutes.size} усл.)"
+                    NodeType.MACRO -> "⚡ Вызов скрипта [${node.id}] — '${node.macroProfileName ?: "Не выбран"}'"
+                }
+                val badges = mutableListOf<String>()
+                if (node.isIndependentThread) badges.add("⚡ Поток")
+                if (node.skipSequentialExecution) badges.add("Функция (Вне очереди)")
+                val headerStr = if (badges.isNotEmpty()) "$typeTitle  [${badges.joinToString(", ")}]" else typeTitle
+
+                card.addView(TextView(service).apply {
+                    text = headerStr
+                    setTextColor(Color.WHITE)
+                    setTypeface(null, Typeface.BOLD)
+                    setScaledTextSize(13f)
+                })
+
+                val details = StringBuilder()
+                if (node.type == NodeType.MANAGER) {
+                    if (node.managerRoutes.isEmpty()) {
+                        details.append("  • ⚠️ Нет заданных маршрутов\n")
+                    } else {
+                        for ((rIdx, route) in node.managerRoutes.withIndex()) {
+                            val checkWarn = if (!allIds.contains(route.checkNodeId)) " ⚠️(нет метки)" else ""
+                            val goWarn = if (route.onSuccessGoToId != -1 && !allIds.contains(route.onSuccessGoToId)) " ⚠️(нет метки)" else ""
+                            details.append("  • #${rIdx + 1}: Если [${route.checkNodeId}]$checkWarn ➔ Идти к [${route.onSuccessGoToId}]$goWarn\n")
+                        }
+                    }
+                    val fb = node.nextNodeIdOnFail?.toString() ?: "След. по списку"
+                    details.append("  • Иначе (Fallback) ➔ [$fb]\n")
+                } else {
+                    when (node.triggerMode) {
+                        -1 -> details.append("  • Условие: Безусловный\n")
+                        0 -> {
+                            val modeDesc = when {
+                                node.dynamicColorUpdate -> "Адаптивный цвет (${node.colorOperator}${if (node.dynamicColorLookbackMs > 0) ", окно ${node.dynamicColorLookbackMs}мс" else ", пред. кадр"})"
+                                node.compareToNodeId != null -> "Сравнение с меткой [${node.compareToNodeId}]"
+                                node.colorCompareX != null -> "Сравнение с точкой (${node.colorCompareX}, ${node.colorCompareY})"
+                                else -> "Цвет пикселя ${node.colorOperator} (допуск ${node.colorTolerance})"
+                            }
+                            details.append("  • Условие: $modeDesc\n")
+                        }
+                        1 -> {
+                            val areaInfo = if (node.imageFullScreenSearch) "Весь экран" else "Зона+${node.searchRadius}px"
+                            val clickInfo = if (node.imageClickFoundCenter) ", Клик в центр" else ""
+                            details.append("  • Условие: Фрагмент экрана (${node.colorOperator}, порог ${node.imageThreshold.toInt()}%, $areaInfo$clickInfo)\n")
+                        }
+                        2 -> {
+                            if (node.isSmartOcr) {
+                                val cmpTarget = if (node.ocrCompareToNodeId != null) "Метка [${node.ocrCompareToNodeId}]" else "${node.ocrTargetValue}"
+                                details.append("  • Условие: Умный OCR (Число ${node.ocrOperator} $cmpTarget)\n")
+                            } else {
+                                details.append("  • Условие: Текст OCR '${node.targetText ?: ""}' (${node.colorOperator})\n")
+                            }
+                        }
+                    }
+
+                    if (node.linkedConditionNodeId != null) {
+                        val warn = if (!allIds.contains(node.linkedConditionNodeId)) " ⚠️(не найдена)" else ""
+                        details.append("  • Связка: ${node.linkedConditionOperator} с меткой [${node.linkedConditionNodeId}]$warn\n")
+                    }
+
+                    val nextSeq = service.nodes.drop(idx + 1).firstOrNull { !it.skipSequentialExecution }?.id
+                    val succStr = when {
+                        node.nextNodeIdOnSuccess == -1 -> "СТОП (-1)"
+                        node.nextNodeIdOnSuccess != null -> {
+                            val warn = if (!allIds.contains(node.nextNodeIdOnSuccess)) " ⚠️(не найдена)" else ""
+                            "[${node.nextNodeIdOnSuccess}]$warn"
+                        }
+                        nextSeq != null -> "[$nextSeq] (по очереди)"
+                        else -> "Конец цикла ↻"
+                    }
+                    details.append("  • Успех ➔ $succStr (пауза ${node.delayAfterMs} мс)\n")
+
+                    if (node.triggerMode != -1) {
+                        val failStr = when {
+                            node.nextNodeIdOnFail == -1 -> "СТОП (-1)"
+                            node.nextNodeIdOnFail != null -> {
+                                val warn = if (!allIds.contains(node.nextNodeIdOnFail)) " ⚠️(не найдена)" else ""
+                                "[${node.nextNodeIdOnFail}]$warn"
+                            }
+                            node.maxCheckCycles != null && node.maxCheckCycles!! > 0 -> {
+                                if (nextSeq != null) "Ждать ${node.maxCheckCycles} раз, затем [$nextSeq]" else "Ждать ${node.maxCheckCycles} раз, затем ↻"
+                            }
+                            else -> "Ждать на [${node.id}] ∞"
+                        }
+                        details.append("  • Провал ➔ $failStr")
+                    }
+                }
+
+                card.addView(TextView(service).apply {
+                    text = details.toString().trimEnd()
+                    setTextColor(Color.parseColor("#CFD8DC"))
+                    setScaledTextSize(12f)
+                    setPadding(0, dpToPx(4), 0, 0)
+                })
+
+                card.setOnClickListener { showEditNodeMenu(node) }
+                listLayout.addView(card)
+            }
+        }
+
+        scroll.addView(listLayout)
+        rootLayout.addView(scroll)
+
+        val backBtn = Button(service).apply {
+            text = "НАЗАД В МЕНЮ"
+            setBackgroundColor(Color.parseColor("#4CAF50"))
+            setTextColor(Color.WHITE)
+            setOnClickListener { showMainMenu() }
+        }
+        rootLayout.addView(backBtn)
+        menuContentContainer.addView(rootLayout)
     }
 
     private fun showHelpMenu() {
@@ -1558,7 +1925,7 @@ class UIManager(private val service: AutoClickService) {
             gravity = Gravity.CENTER_VERTICAL
         }
         val extremeSpeedCheck = android.widget.CheckBox(service).apply {
-            text = "Снять ограничение скорости (~600 КПС, по умолчанию ~300 КПС)"
+            text = "Снять ограничения минимальной задержки (до ~600 КПС при 0 мс)"
             setTextColor(Color.RED)
             isChecked = service.allowExtremeSpeed
             setOnCheckedChangeListener { _, isChecked ->
@@ -1928,6 +2295,18 @@ class UIManager(private val service: AutoClickService) {
             
             if (n.swipeTargetNodeId == id1) n.swipeTargetNodeId = id2
             else if (n.swipeTargetNodeId == id2) n.swipeTargetNodeId = id1
+
+            if (n.linkedConditionNodeId == id1) n.linkedConditionNodeId = id2
+            else if (n.linkedConditionNodeId == id2) n.linkedConditionNodeId = id1
+
+            if (n.managerRoutes.isNotEmpty()) {
+                n.managerRoutes.forEach { r ->
+                    if (r.checkNodeId == id1) r.checkNodeId = id2
+                    else if (r.checkNodeId == id2) r.checkNodeId = id1
+                    if (r.onSuccessGoToId == id1) r.onSuccessGoToId = id2
+                    else if (r.onSuccessGoToId == id2) r.onSuccessGoToId = id1
+                }
+            }
             
             if (n.syncWithNodeIds.isNotEmpty()) {
                 val syncIds = n.syncWithNodeIds.split(",").mapNotNull { it.trim().toIntOrNull() }.toMutableList()
@@ -1967,6 +2346,15 @@ class UIManager(private val service: AutoClickService) {
         service.autoSave()
     }
 
+    fun reopenNodeEditMenuFromExternal(node: TargetNode) {
+        if (modMenu == null) {
+            showModMenu()
+        } else {
+            modMenu?.visibility = View.VISIBLE
+        }
+        showEditNodeMenu(node)
+    }
+
     private fun showEditNodeMenu(node: TargetNode) {
         setMenuFocusable(true)
         menuContentContainer.removeAllViews()
@@ -1992,6 +2380,7 @@ class UIManager(private val service: AutoClickService) {
             isEnabled = node.id > 1
             setOnClickListener {
                 swapNodes(node.id, node.id - 1)
+                showEditNodeMenu(node)
             }
         }
         
@@ -2012,6 +2401,7 @@ class UIManager(private val service: AutoClickService) {
             isEnabled = node.id < maxId
             setOnClickListener {
                 swapNodes(node.id, node.id + 1)
+                showEditNodeMenu(node)
             }
         }
         
@@ -2660,7 +3050,7 @@ class UIManager(private val service: AutoClickService) {
         val colorBehaviorSpinner = android.widget.Spinner(service).apply {
             layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT)
             setBackgroundColor(Color.parseColor("#444444"))
-            val arr = arrayOf("Статичный (Заданный вручную)", "Динамичный (Обновить если изменился)", "Сравнить с другой меткой", "Сравнить с другой точкой")
+            val arr = arrayOf("Статичный (Заданный вручную)", "Адаптивный (При изменении за время)", "Сравнить с другой меткой", "Сравнить с другой точкой")
             val adapter = createThemedSpinnerAdapter(arr)
             this.adapter = adapter
             val sel = if (node.dynamicColorUpdate) 1 else if (node.compareToNodeId != null) 2 else if (node.colorCompareX != null) 3 else 0
@@ -2672,7 +3062,10 @@ class UIManager(private val service: AutoClickService) {
                     val wasPoint = node.colorCompareX != null
                     
                     if (pos == 0) { node.dynamicColorUpdate = false; node.compareToNodeId = null; node.colorCompareX = null; node.colorCompareY = null; removeColorCompareMarker(node.id) }
-                    if (pos == 1) { node.dynamicColorUpdate = true; node.compareToNodeId = null; node.colorCompareX = null; node.colorCompareY = null; removeColorCompareMarker(node.id) }
+                    if (pos == 1) {
+                        if (!wasDyn) node.colorOperator = "!="
+                        node.dynamicColorUpdate = true; node.compareToNodeId = null; node.colorCompareX = null; node.colorCompareY = null; removeColorCompareMarker(node.id)
+                    }
                     if (pos == 2) { node.dynamicColorUpdate = false; node.colorCompareX = null; node.colorCompareY = null; removeColorCompareMarker(node.id); if (node.compareToNodeId == null) node.compareToNodeId = 0 }
                     if (pos == 3) { node.dynamicColorUpdate = false; node.compareToNodeId = null; createColorCompareMarker(node) }
                     
@@ -2688,6 +3081,8 @@ class UIManager(private val service: AutoClickService) {
             }
         }
         colorBehaviorLayout.apply { addView(colorBehaviorSpinner) }
+
+        val (dynamicLookbackRow, getDynamicLookbackMs) = createTimeInputRow("Память цвета (0 = пред. кадр):", node.dynamicColorLookbackMs)
 
         val colorPreview = TextView(service).apply {
             val hasColor = node.targetColor != null
@@ -2866,12 +3261,42 @@ class UIManager(private val service: AutoClickService) {
         updatePreviewImage()
 
         
+        val imageFullScreenSearchCheck = android.widget.CheckBox(service).apply {
+            text = "Искать фрагмент по всему экрану"
+            setTextColor(Color.parseColor("#80CBC4"))
+            isChecked = node.imageFullScreenSearch
+            setOnCheckedChangeListener { _, isChecked ->
+                node.imageFullScreenSearch = isChecked
+            }
+        }
+
+        val imageClickFoundCenterCheck = android.widget.CheckBox(service).apply {
+            text = "Нажимать в центр найденного фрагмента"
+            setTextColor(Color.parseColor("#FFCC00"))
+            isChecked = node.imageClickFoundCenter
+            setOnCheckedChangeListener { _, isChecked ->
+                node.imageClickFoundCenter = isChecked
+            }
+        }
+
         val capImgBtn = Button(service).apply {
-            text = if (node.triggerMode == 1) "ЗАХВАТИТЬ ФРАГМЕНТ ИЗОБРАЖЕНИЯ\n(Удерживать для сброса)" else "ТЕСТ РАСПОЗНАВАНИЯ ТЕКСТА"
+            text = if (node.triggerMode == 1) "📸 ЗАХВАТИТЬ ФРАГМЕНТ С ЭКРАНА\n(Удерживать для сброса)" else "ТЕСТ РАСПОЗНАВАНИЯ ТЕКСТА"
             setOnClickListener {
+                updateNodeScreenPosition(node)
                 if (node.triggerMode == 2) {
                     node.targetText = textTargetEdit.text.toString().takeIf { it.isNotEmpty() }
                     node.targetLanguage = if (textLangSpinner.selectedItemPosition == 1) "eng" else if (textLangSpinner.selectedItemPosition == 2) "rus+eng" else "rus"
+                    node.isSmartOcr = smartOcrCheck.isChecked
+                    node.ocrOperator = arrayOf("==", "!=", ">", "<", ">=", "<=")[smartOcrOpSpinner.selectedItemPosition]
+                    node.ocrTargetValue = smartOcrValEdit.text.toString().toDoubleOrNull() ?: 0.0
+                    node.ocrCustomSuffixes = smartOcrSufEdit.text.toString()
+                    node.ocrCompareToNodeId = if (ocrCompareTargetSpinner.selectedItemPosition > 0) {
+                        availableOcrNodes[ocrCompareTargetSpinner.selectedItemPosition - 1].id
+                    } else null
+                }
+                if (node.textZoneStartX == 0 && node.textZoneStartY == 0 && node.textZoneEndX == 0 && node.textZoneEndY == 0) {
+                    createTextZoneMarkers(node)
+                    fragZoneBtn.text = "СКРЫТЬ ОБЛАСТЬ"
                 }
                 modMenu?.visibility = View.INVISIBLE
                 linesOverlayView?.visibility = View.INVISIBLE
@@ -2892,12 +3317,12 @@ class UIManager(private val service: AutoClickService) {
                         if (base64 != null) {
                             try {
                                 val bytes = android.util.Base64.decode(base64, android.util.Base64.DEFAULT)
-                                var bitmap = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                                updatePreviewImage()
+                                val bitmap = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                                node.invalidateImageCache()
                                 node.targetImageBase64 = base64
-                                node.cachedTargetBitmap = null
+                                updatePreviewImage()
                                 if (node.triggerMode == 1) {
-                                    Toast.makeText(service, "Фрагмент захвачен!", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(service, "Фрагмент захвачен (${bitmap.width}x${bitmap.height})!", Toast.LENGTH_SHORT).show()
                                 } else {
                                     service.testTextRecognition(node, bitmap)
                                 }
@@ -2907,8 +3332,8 @@ class UIManager(private val service: AutoClickService) {
                 }, 300)
             }
             setOnLongClickListener {
+                node.invalidateImageCache()
                 node.targetImageBase64 = null
-                node.cachedTargetBitmap = null
                 imgPreview.setImageBitmap(null)
                 imgPreview.setBackgroundColor(Color.parseColor("#555555"))
                 if (node.triggerMode == 1) {
@@ -2920,6 +3345,54 @@ class UIManager(private val service: AutoClickService) {
             }
         }
 
+        val importImgBtn = Button(service).apply {
+            text = "📂 ЗАГРУЗИТЬ ИЗОБРАЖЕНИЕ ИЗ ГАЛЕРЕИ / ФАЙЛА"
+            setBackgroundColor(Color.parseColor("#37474F"))
+            setTextColor(Color.WHITE)
+            setOnClickListener {
+                val intent = android.content.Intent(service, MainActivity::class.java).apply {
+                    action = "ACTION_IMPORT_IMAGE"
+                    putExtra("NODE_ID", node.id)
+                    addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                service.startActivity(intent)
+            }
+        }
+
+        val testImgSearchBtn = Button(service).apply {
+            text = "🔍 ТЕСТ ПОИСКА ФРАГМЕНТА НА ЭКРАНЕ"
+            setBackgroundColor(Color.parseColor("#2E5B82"))
+            setTextColor(Color.WHITE)
+            setOnClickListener {
+                updateNodeScreenPosition(node)
+                node.colorTolerance = colorTolEdit.text.toString().toIntOrNull() ?: 15
+                node.imageThreshold = imgThresholdEdit.text.toString().toFloatOrNull() ?: 80f
+                node.searchRadius = searchRadiusEdit.text.toString().toIntOrNull() ?: 0
+                node.checkResolutionScale = (resolutionScaleBar.progress + 10) / 100f
+                node.imageFullScreenSearch = imageFullScreenSearchCheck.isChecked
+                node.imageClickFoundCenter = imageClickFoundCenterCheck.isChecked
+
+                modMenu?.visibility = View.INVISIBLE
+                linesOverlayView?.visibility = View.INVISIBLE
+                textZoneStartViews.values.forEach { it.visibility = View.INVISIBLE }
+                textZoneEndViews.values.forEach { it.visibility = View.INVISIBLE }
+                colorCompareViews.values.forEach { it.visibility = View.INVISIBLE }
+                nodeViews.values.forEach { it.visibility = View.INVISIBLE }
+
+                service.handler.postDelayed({
+                    service.testImageFragmentSearch(node)
+                    service.handler.postDelayed({
+                        modMenu?.visibility = View.VISIBLE
+                        linesOverlayView?.visibility = View.VISIBLE
+                        textZoneStartViews.values.forEach { it.visibility = View.VISIBLE }
+                        textZoneEndViews.values.forEach { it.visibility = View.VISIBLE }
+                        colorCompareViews.values.forEach { it.visibility = View.VISIBLE }
+                        nodeViews.values.forEach { it.visibility = View.VISIBLE }
+                    }, 150)
+                }, 250)
+            }
+        }
+
         val hasLogicChanges = node.targetColor != null || node.targetImageBase64 != null || node.targetText != null || node.colorOperator != "==" || node.colorTolerance != 15 || node.linkedConditionNodeId != null || node.compareToNodeId != null || node.dynamicColorUpdate || node.triggerMode >= 0
         val logicSection = addSection("👁 Настройки Поиска (Условие)", hasLogicChanges) { body ->
             body.addView(triggerModeLayout)
@@ -2928,6 +3401,9 @@ class UIManager(private val service: AutoClickService) {
                 body.addView(colorBehaviorLayout)
                 body.addView(colorOpLayout)
                 body.addView(colorToleranceLayout)
+                if (node.dynamicColorUpdate) {
+                    body.addView(dynamicLookbackRow)
+                }
                 
                 if (!node.dynamicColorUpdate && node.compareToNodeId == null && node.colorCompareX == null) {
                     body.addView(colorPreview)
@@ -2943,12 +3419,17 @@ class UIManager(private val service: AutoClickService) {
                 }
             } else if (node.triggerMode == 1) { // Image Fragment
                 body.addView(colorOpLayout)
+                body.addView(colorToleranceLayout)
                 body.addView(fragZoneBtn)
+                body.addView(imageFullScreenSearchCheck)
+                body.addView(imageClickFoundCenterCheck)
                 body.addView(imgThresholdLayout)
                 body.addView(searchRadiusLayout)
                 body.addView(resolutionScaleLayout)
                 body.addView(imgPreview)
                 body.addView(capImgBtn)
+                body.addView(importImgBtn)
+                body.addView(testImgSearchBtn)
             } else if (node.triggerMode == 2) { // Text Recognition
                 body.addView(colorOpLayout)
                 body.addView(textLangLayout)
@@ -3013,28 +3494,68 @@ class UIManager(private val service: AutoClickService) {
         syncLayout.addView(syncEdit)
 
         val swipeLayout = LinearLayout(service).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 10, 0, 10); gravity = Gravity.CENTER_VERTICAL }
+        val (holdDurRow, getHoldDurRowMs) = createTimeInputRow("Длит. зажатия (в фоне):", node.holdDurationMs)
+        val holdHintTv = TextView(service).apply {
+            text = "💡 Метка зажимает экран на указанное время, а макрос сразу продолжает выполнять следующие шаги"
+            setTextColor(Color.parseColor("#80CBC4"))
+            setScaledTextSize(11f)
+            setPadding(0, 0, 0, dpToPx(6))
+            visibility = if (node.isHold && !node.isSwipe) View.VISIBLE else View.GONE
+        }
+        holdDurRow.visibility = if (node.isHold && !node.isSwipe) View.VISIBLE else View.GONE
+
+        lateinit var holdBtnRef: Button
         val swipeBtn = Button(service).apply {
             text = if (node.isSwipe) "Свайп: ВКЛ" else "Свайп: ВЫКЛ"
+            layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f).apply {
+                setMargins(0, 0, dpToPx(4), 0)
+            }
             setOnClickListener {
                 node.isSwipe = !node.isSwipe
-                text = if (node.isSwipe) "Свайп: ВКЛ" else "Свайп: ВЫКЛ"
                 if (node.isSwipe) {
-                    createSwipeEndMarker(node)
+                    node.isHold = false
+                    holdBtnRef.text = "✋ Удержание: ВЫКЛ"
+                    holdDurRow.visibility = View.GONE
+                    holdHintTv.visibility = View.GONE
+                    if (node.swipeTargetNodeId == null && node.swipePathPoints.isEmpty()) {
+                        createSwipeEndMarker(node)
+                    }
                 } else {
                     removeSwipeEndMarker(node.id)
                 }
+                text = if (node.isSwipe) "Свайп: ВКЛ" else "Свайп: ВЫКЛ"
                 invalidateLines()
             }
         }
+        val holdBtn = Button(service).apply {
+            text = if (node.isHold && !node.isSwipe) "✋ Удержание: ВКЛ" else "✋ Удержание: ВЫКЛ"
+            layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f).apply {
+                setMargins(dpToPx(4), 0, 0, 0)
+            }
+            setOnClickListener {
+                node.isHold = !node.isHold
+                if (node.isHold) {
+                    node.isSwipe = false
+                    swipeBtn.text = "Свайп: ВЫКЛ"
+                    removeSwipeEndMarker(node.id)
+                }
+                text = if (node.isHold) "✋ Удержание: ВКЛ" else "✋ Удержание: ВЫКЛ"
+                holdDurRow.visibility = if (node.isHold) View.VISIBLE else View.GONE
+                holdHintTv.visibility = if (node.isHold) View.VISIBLE else View.GONE
+                invalidateLines()
+            }
+        }
+        holdBtnRef = holdBtn
         swipeLayout.addView(swipeBtn)
+        swipeLayout.addView(holdBtn)
         
-        val (swipeDurRow, getSwipeDurRowMs) = createTimeInputRow("Задержка:", node.swipeDurationMs)
+        val (swipeDurRow, getSwipeDurRowMs) = createTimeInputRow("Длит. свайпа:", node.swipeDurationMs)
         
         val swipeDeltaLayout = LinearLayout(service).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 10, 0, 0) }
         val modeSpinnerLayout = LinearLayout(service).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         modeSpinnerLayout.addView(TextView(service).apply { text = "Режим свайпа: "; setTextColor(Color.WHITE) })
         val modeSpinner = android.widget.Spinner(service).apply {
-            adapter = android.widget.ArrayAdapter(service, android.R.layout.simple_spinner_item, arrayOf("Вектор (Суб-метка)", "К метке (ID)", "Ломаная линия (Жест)"))
+            adapter = android.widget.ArrayAdapter(service, android.R.layout.simple_spinner_item, arrayOf("Вектор (Суб-метка)", "К метке (ID)", "Ломаная / Кривая (Запись)"))
             setSelection(if (node.swipePathPoints.isNotEmpty()) 2 else if (node.swipeTargetNodeId != null) 1 else 0)
         }
         modeSpinnerLayout.addView(modeSpinner)
@@ -3052,10 +3573,41 @@ class UIManager(private val service: AutoClickService) {
         }
         swipeTargetEditLayout.addView(swipeTargetEdit)
         swipeDeltaLayout.addView(swipeTargetEditLayout)
+
+        val customPathLayout = LinearLayout(service).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dpToPx(6), 0, dpToPx(4))
+        }
+        val customPathInfoTv = TextView(service).apply {
+            text = if (node.swipePathPoints.size >= 2) {
+                "✅ Записана траектория: ${node.swipePathPoints.size} точек (${node.swipeDurationMs} мс)"
+            } else {
+                "Траектория не записана (нажмите кнопку ниже и проведите пальцем по экрану)"
+            }
+            setTextColor(if (node.swipePathPoints.size >= 2) Color.parseColor("#69F0AE") else Color.parseColor("#B0BEC5"))
+            setScaledTextSize(11f)
+            setPadding(0, 0, 0, dpToPx(4))
+        }
+        val recordSwipePathBtn = Button(service).apply {
+            text = "✍️ Нарисовать сложный свайп на экране"
+            setBackgroundColor(Color.parseColor("#00838F"))
+            setTextColor(Color.WHITE)
+            setOnClickListener {
+                modMenu?.visibility = View.GONE
+                service.startSingleSwipeRecording(node) {
+                    modMenu?.visibility = View.VISIBLE
+                    showEditNodeMenu(node)
+                }
+            }
+        }
+        customPathLayout.addView(customPathInfoTv)
+        customPathLayout.addView(recordSwipePathBtn)
+        swipeDeltaLayout.addView(customPathLayout)
         
         modeSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
             override fun onItemSelected(p0: android.widget.AdapterView<*>?, p1: View?, pos: Int, p3: Long) {
                 swipeTargetEditLayout.visibility = if (pos == 1) View.VISIBLE else View.GONE
+                customPathLayout.visibility = if (pos == 2) View.VISIBLE else View.GONE
                 
                 if (pos == 0) {
                     // Vector
@@ -3067,41 +3619,43 @@ class UIManager(private val service: AutoClickService) {
                     removeSwipeEndMarker(node.id)
                     node.swipePathPoints = emptyList()
                 } else if (pos == 2) {
-                    // Gesture (don't clear points if we just switched to view it)
-                    removeSwipeEndMarker(node.id)
+                    // Gesture (keep swipe end marker at end of path)
                     node.swipeTargetNodeId = null
+                    if (node.isSwipe && node.swipePathPoints.isNotEmpty()) {
+                        createSwipeEndMarker(node)
+                    }
                 }
                 invalidateLines()
             }
             override fun onNothingSelected(p0: android.widget.AdapterView<*>?) {}
         }
-
         
-        val hasSwipeChanges = node.syncWithNodeIds.isNotEmpty() || node.isSwipe || node.swipeTargetNodeId != null || node.swipeDurationMs != 500L
-        val syncSwipeSection = addSection("⚙️ Доп. настройки (Свайп / Синхронизация)", hasSwipeChanges) { body ->
+        val hasSwipeChanges = node.syncWithNodeIds.isNotEmpty() || node.isSwipe || node.isHold || node.swipeTargetNodeId != null || node.swipeDurationMs != 500L
+        val syncSwipeSection = addSection("⚙️ Жест (Свайп / Удержание / Синхронизация)", hasSwipeChanges) { body ->
             body.addView(syncLayout)
             body.addView(swipeLayout)
+            body.addView(holdHintTv)
+            body.addView(holdDurRow)
             body.addView(swipeDurRow)
             body.addView(swipeDeltaLayout)
         }
 
-        if (false) {
+        if (node.type == NodeType.CHECK_COLOR || node.type == NodeType.MACRO || node.type == NodeType.MANAGER) {
+            swipeLayout.visibility = View.GONE
+            holdHintTv.visibility = View.GONE
+            holdDurRow.visibility = View.GONE
+            swipeDurRow.visibility = View.GONE
+            swipeDeltaLayout.visibility = View.GONE
+            clickDurRow.visibility = View.GONE
+        }
+        if (node.type == NodeType.MANAGER) {
+            timingsSection.visibility = View.GONE
+            logicSection.visibility = View.GONE
+            routingSection.visibility = View.GONE
+            macroSection.visibility = View.GONE
+            antiDetectSection.visibility = View.GONE
             syncSwipeSection.visibility = View.GONE
         }
-            if (node.type == NodeType.CHECK_COLOR || node.type == NodeType.MACRO || node.type == NodeType.MANAGER) {
-                swipeLayout.visibility = View.GONE
-                swipeDurRow.visibility = View.GONE
-                swipeDeltaLayout.visibility = View.GONE
-                clickDurRow.visibility = View.GONE
-            }
-            if (node.type == NodeType.MANAGER) {
-                timingsSection.visibility = View.GONE
-                logicSection.visibility = View.GONE
-                routingSection.visibility = View.GONE
-                macroSection.visibility = View.GONE
-                antiDetectSection.visibility = View.GONE
-                syncSwipeSection.visibility = View.GONE
-            }
 
         // --- SAVE BUTTON ---
         val saveBtn = Button(service).apply {
@@ -3110,6 +3664,7 @@ class UIManager(private val service: AutoClickService) {
             setTextColor(Color.WHITE)
             setOnClickListener {
                 node.clickDurationMs = getClickDurRowMs()
+                node.holdDurationMs = getHoldDurRowMs()
                 node.delayAfterMs = getDelayRowMs()
                 node.randomizeDelayMs = getRandomDelayRowMs()
                 node.randomizeRadius = randomRadiusEdit.text.toString().toIntOrNull() ?: 0
@@ -3128,9 +3683,12 @@ class UIManager(private val service: AutoClickService) {
                 }
                 
                 node.colorTolerance = colorTolEdit.text.toString().toIntOrNull() ?: 15
+                node.dynamicColorLookbackMs = getDynamicLookbackMs()
                 node.imageThreshold = imgThresholdEdit.text.toString().toFloatOrNull() ?: 80f
                 node.searchRadius = searchRadiusEdit.text.toString().toIntOrNull() ?: 0
                 node.checkResolutionScale = (resolutionScaleBar.progress + 10) / 100f
+                node.imageFullScreenSearch = imageFullScreenSearchCheck.isChecked
+                node.imageClickFoundCenter = imageClickFoundCenterCheck.isChecked
                 node.targetText = textTargetEdit.text.toString().takeIf { it.isNotEmpty() }
                 node.targetLanguage = if (textLangSpinner.selectedItemPosition == 1) "eng" else if (textLangSpinner.selectedItemPosition == 2) "rus+eng" else "rus"
                 node.ocrFullScreenClick = ocrFullscreenCheck.isChecked
@@ -3145,6 +3703,8 @@ class UIManager(private val service: AutoClickService) {
                 node.syncWithNodeIds = syncEdit.text.toString().filter { it.isDigit() || it == ',' }
                 node.swipeDurationMs = getSwipeDurRowMs()
                 node.swipeTargetNodeId = swipeTargetEdit.text.toString().toIntOrNull()
+                invalidateLines()
+                service.autoSave()
                 showMainMenu()
             }
         }
@@ -3781,8 +4341,26 @@ class UIManager(private val service: AutoClickService) {
         removeTextZoneMarkers(id)
         removeColorCompareMarker(id)
         service.nodes.removeAll { it.id == id }
+        service.autoSave()
         updateMenu()
         invalidateLines()
+    }
+
+    fun updateNodeViewPosition(node: TargetNode) {
+        val view = nodeViews[node.id]
+        val params = nodeParams[node.id]
+        if (view != null && params != null) {
+            params.x = node.x - dpToPx(30)
+            params.y = node.y - dpToPx(30)
+            try { windowManager.updateViewLayout(view, params) } catch (_: Exception) {}
+        }
+        val endView = swipeEndViews[node.id]
+        val endParams = swipeEndParams[node.id]
+        if (endView != null && endParams != null) {
+            endParams.x = node.swipeEndX - dpToPx(30)
+            endParams.y = node.swipeEndY - dpToPx(30)
+            try { windowManager.updateViewLayout(endView, endParams) } catch (_: Exception) {}
+        }
     }
 
     fun updateNodeScreenPosition(node: TargetNode) {

@@ -20,8 +20,10 @@ class MainActivity : Activity() {
     companion object {
         const val REQ_EXPORT = 1001
         const val REQ_IMPORT = 1002
+        const val REQ_IMPORT_IMAGE = 1003
         var pendingExportData: String? = null
         var pendingImportData: String? = null
+        var pendingImageNodeId: Int? = null
     }
 
     override fun onNewIntent(intent: Intent?) {
@@ -49,6 +51,14 @@ class MainActivity : Activity() {
                     type = "application/json"
                 }
                 startActivityForResult(sfIntent, REQ_IMPORT)
+            }
+            "ACTION_IMPORT_IMAGE" -> {
+                pendingImageNodeId = intent.getIntExtra("node_id", -1)
+                val imgIntent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = "image/*"
+                }
+                startActivityForResult(imgIntent, REQ_IMPORT_IMAGE)
             }
             "ACTION_SHARE_PROFILE" -> {
                 val data = pendingExportData
@@ -124,6 +134,43 @@ class MainActivity : Activity() {
                     } catch (e: Exception) {
                         e.printStackTrace()
                         android.widget.Toast.makeText(this, "Ошибка загрузки", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                } else if (requestCode == REQ_IMPORT_IMAGE) {
+                    try {
+                        val rawBmp = contentResolver.openInputStream(uri)?.use { stream ->
+                            android.graphics.BitmapFactory.decodeStream(stream)
+                        }
+                        val instance = AutoClickService.instance
+                        val targetId = pendingImageNodeId
+                        if (rawBmp != null && instance != null && targetId != null) {
+                            val maxDim = 360
+                            val finalBmp = if (rawBmp.width > maxDim || rawBmp.height > maxDim) {
+                                val ratio = minOf(maxDim.toFloat() / rawBmp.width, maxDim.toFloat() / rawBmp.height)
+                                val sw = maxOf(1, (rawBmp.width * ratio).toInt())
+                                val sh = maxOf(1, (rawBmp.height * ratio).toInt())
+                                val scaled = android.graphics.Bitmap.createScaledBitmap(rawBmp, sw, sh, true)
+                                if (scaled != rawBmp) rawBmp.recycle()
+                                scaled
+                            } else {
+                                rawBmp
+                            }
+                            val baos = java.io.ByteArrayOutputStream()
+                            finalBmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, baos)
+                            val base64 = android.util.Base64.encodeToString(baos.toByteArray(), android.util.Base64.DEFAULT)
+                            val node = instance.nodes.find { it.id == targetId }
+                            if (node != null) {
+                                node.invalidateImageCache()
+                                node.targetImageBase64 = base64
+                                instance.autoSave()
+                                instance.uiManager.reopenNodeEditMenuFromExternal(node)
+                                android.widget.Toast.makeText(this, "Изображение загружено (${finalBmp.width}x${finalBmp.height})", android.widget.Toast.LENGTH_SHORT).show()
+                            }
+                            finalBmp.recycle()
+                            finish()
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                        android.widget.Toast.makeText(this, "Ошибка загрузки изображения", android.widget.Toast.LENGTH_SHORT).show()
                     }
                 }
             }
@@ -387,12 +434,13 @@ class MainActivity : Activity() {
     private fun showScenarioTree() {
         val scroll = ScrollView(this).apply {
             setPadding(40, 40, 40, 40)
+            setBackgroundColor(Color.parseColor("#181818"))
         }
         
         val treeText = TextView(this).apply {
             textSize = 14f
-            setLineSpacing(0f, 1.2f)
-            setTextColor(Color.BLACK)
+            setLineSpacing(0f, 1.25f)
+            setTextColor(Color.WHITE)
         }
         
         val instance = AutoClickService.instance
@@ -400,15 +448,50 @@ class MainActivity : Activity() {
             treeText.text = "Сценарий пуст или служба не запущена."
         } else {
             val sb = java.lang.StringBuilder()
-            sb.append("Ваш сценарий:\n\n")
-            for (node in instance.nodes) {
-                sb.append("Метка [${node.id}]: ${if(node.isSwipe) "Свайп" else "Клик"}\n")
-                if (node.triggerMode == 0) sb.append("  ↳ Условие: Цвет ${node.colorOperator}\n")
-                if (node.triggerMode == 1) sb.append("  ↳ Условие: Картинка\n")
-                if (node.triggerMode == 2) sb.append("  ↳ Условие: Текст '${node.targetText}'\n")
+            sb.append("🌳 Древо сценария (${instance.nodes.size} шаг.):\n\n")
+            for ((idx, node) in instance.nodes.withIndex()) {
+                val typeStr = when (node.type) {
+                    NodeType.CLICK -> if (node.isSwipe) "🎯 Метка (Свайп ${node.swipeDurationMs} мс)" else "🎯 Метка (Клик ${node.clickDurationMs} мс, x${node.repetitions})"
+                    NodeType.CHECK_COLOR -> "👁 Триггер (Проверка условия)"
+                    NodeType.MANAGER -> "🔀 Менеджер (${node.managerRoutes.size} усл.)"
+                    NodeType.MACRO -> "⚡ Вызов скрипта '${node.macroProfileName ?: "Не выбран"}'"
+                }
+                sb.append("[$idx] Шаг [${node.id}]: $typeStr\n")
+                if (node.isIndependentThread) sb.append("  ↳ Поток: Отдельный параллельный поток\n")
+                if (node.skipSequentialExecution) sb.append("  ↳ Режим: Функция (пропуск в линейной очереди)\n")
+
+                if (node.type == NodeType.MANAGER) {
+                    for ((rIdx, r) in node.managerRoutes.withIndex()) {
+                        sb.append("  ↳ Маршрут #${rIdx + 1}: Если [${r.checkNodeId}] ➔ Идти к [${r.onSuccessGoToId}]\n")
+                    }
+                    sb.append("  ↳ Иначе (Fallback) -> [${node.nextNodeIdOnFail ?: "Следующая"}]\n\n")
+                    continue
+                }
+
+                when (node.triggerMode) {
+                    -1 -> sb.append("  ↳ Условие: Безусловный\n")
+                    0 -> {
+                        val cDesc = when {
+                            node.dynamicColorUpdate -> "Динамический цвет (при изменении)"
+                            node.compareToNodeId != null -> "Сравнение цвета с [${node.compareToNodeId}]"
+                            node.colorCompareX != null -> "Сравнение с точкой (${node.colorCompareX}, ${node.colorCompareY})"
+                            else -> "Цвет пикселя ${node.colorOperator} (допуск ${node.colorTolerance})"
+                        }
+                        sb.append("  ↳ Условие: $cDesc\n")
+                    }
+                    1 -> sb.append("  ↳ Условие: Фрагмент экрана (${node.colorOperator}, порог ${node.imageThreshold.toInt()}%)\n")
+                    2 -> {
+                        if (node.isSmartOcr) {
+                            val cmp = if (node.ocrCompareToNodeId != null) "Метка [${node.ocrCompareToNodeId}]" else "${node.ocrTargetValue}"
+                            sb.append("  ↳ Условие: Умный OCR (Число ${node.ocrOperator} $cmp)\n")
+                        } else {
+                            sb.append("  ↳ Условие: Текст '${node.targetText ?: ""}' (${node.colorOperator})\n")
+                        }
+                    }
+                }
                 
                 if (node.linkedConditionNodeId != null) {
-                    sb.append("  ↳ Логика: ${node.linkedConditionOperator} условие Метки [${node.linkedConditionNodeId}]\n")
+                    sb.append("  ↳ Связка: ${node.linkedConditionOperator} условие Метки [${node.linkedConditionNodeId}]\n")
                 }
                 
                 if (node.nextNodeIdOnSuccess != null) {
@@ -417,12 +500,11 @@ class MainActivity : Activity() {
                     sb.append("  ↳ При успехе -> [Следующая по списку]\n")
                 }
                 
-                if (node.maxCheckCycles != null && node.maxCheckCycles!! > 0) {
-                    sb.append("  ↳ Циклов проверок: ${node.maxCheckCycles}\n")
-                    if (node.nextNodeIdOnFail != null) {
-                        sb.append("  ↳ При провале -> [${node.nextNodeIdOnFail}]\n")
+                if (node.triggerMode != -1) {
+                    if (node.maxCheckCycles != null && node.maxCheckCycles!! > 0) {
+                        sb.append("  ↳ Лимит проверок: ${node.maxCheckCycles} -> При провале: [${node.nextNodeIdOnFail ?: "Следующая"}]\n")
                     } else {
-                        sb.append("  ↳ При провале -> [Следующая по списку]\n")
+                        sb.append("  ↳ При провале -> [${node.nextNodeIdOnFail ?: "Ждать на [${node.id}] ∞"}]\n")
                     }
                 }
                 sb.append("\n")
@@ -432,7 +514,7 @@ class MainActivity : Activity() {
         
         scroll.addView(treeText)
         
-        android.app.AlertDialog.Builder(this)
+        android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle("ДЕРЕВО СЦЕНАРИЯ")
             .setView(scroll)
             .setPositiveButton("ЗАКРЫТЬ", null)

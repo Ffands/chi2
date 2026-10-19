@@ -38,11 +38,14 @@ data class TargetNode(
     var targetLanguage: String = "rus", // "rus" or "eng"
     var triggerMode: Int = -1, // -1: None, 0 = Pixel Color, 1 = Image Fragment, 2 = Text
     var dynamicColorUpdate: Boolean = false,
+    var dynamicColorLookbackMs: Long = 0L,
     var compareToNodeId: Int? = null,
     var colorCompareX: Int? = null,
     var colorCompareY: Int? = null,
     var imageThreshold: Float = 80f,
     var searchRadius: Int = 0,
+    var imageClickFoundCenter: Boolean = false,
+    var imageFullScreenSearch: Boolean = false,
     var delayAfterMs: Long = 300L,
     var randomizeDelayMs: Long = 0L,
     var randomizeRadius: Int = 0,
@@ -56,6 +59,8 @@ data class TargetNode(
     var sizeScale: Float = 1.0f,
     var syncWithNodeIds: String = "",
     var clickDurationMs: Long = 30L,
+    var isHold: Boolean = false,
+    var holdDurationMs: Long = 1000L,
     var isSwipe: Boolean = false,
     var swipeTargetNodeId: Int? = null,
     var swipeEndX: Int = 0,
@@ -85,6 +90,24 @@ data class TargetNode(
     @Transient var currentCheckCycle: Int = 0
     @Transient var currentRepetition: Int = 0
     @Transient var cachedTargetBitmap: android.graphics.Bitmap? = null
+    @Transient var cachedTargetPixels: IntArray? = null
+    @Transient var cachedTargetW: Int = 0
+    @Transient var cachedTargetH: Int = 0
+    @Transient var lastFoundCenterX: Int? = null
+    @Transient var lastFoundCenterY: Int? = null
+    @Transient var colorHistory: java.util.ArrayDeque<Pair<Long, Int>> = java.util.ArrayDeque()
+        get() {
+            if (field == null) field = java.util.ArrayDeque()
+            return field
+        }
+
+    fun invalidateImageCache() {
+        cachedTargetBitmap?.let { if (!it.isRecycled) it.recycle() }
+        cachedTargetBitmap = null
+        cachedTargetPixels = null
+        cachedTargetW = 0
+        cachedTargetH = 0
+    }
 
     fun colorMatch(otherColor: Int): Boolean {
         if(targetColor == null) return true
@@ -111,11 +134,14 @@ data class TargetNode(
         if (targetLanguage != "rus") obj.put("targetLanguage", targetLanguage)
         if (triggerMode != -1) obj.put("triggerMode", triggerMode)
         if (dynamicColorUpdate) obj.put("dynamicColorUpdate", dynamicColorUpdate)
+        if (dynamicColorLookbackMs > 0L) obj.put("dynamicColorLookbackMs", dynamicColorLookbackMs)
         if (compareToNodeId != null) obj.put("compareToNodeId", compareToNodeId)
         if (colorCompareX != null) obj.put("colorCompareX", colorCompareX)
         if (colorCompareY != null) obj.put("colorCompareY", colorCompareY)
         if (imageThreshold != 80.0f) obj.put("imageThreshold", imageThreshold.toDouble())
         if (searchRadius != 0) obj.put("searchRadius", searchRadius)
+        if (imageClickFoundCenter) obj.put("imageClickFoundCenter", imageClickFoundCenter)
+        if (imageFullScreenSearch) obj.put("imageFullScreenSearch", imageFullScreenSearch)
         if (delayAfterMs != 300L) obj.put("delayAfterMs", delayAfterMs)
         if (randomizeDelayMs != 0L) obj.put("randomizeDelayMs", randomizeDelayMs)
         if (randomizeRadius != 0) obj.put("randomizeRadius", randomizeRadius)
@@ -129,6 +155,8 @@ data class TargetNode(
         if (sizeScale != 1.0f) obj.put("sizeScale", sizeScale.toDouble())
         if (syncWithNodeIds.isNotEmpty()) obj.put("syncWithNodeIds", syncWithNodeIds)
         if (clickDurationMs != 30L) obj.put("clickDurationMs", clickDurationMs)
+        if (isHold) obj.put("isHold", isHold)
+        if (holdDurationMs != 1000L) obj.put("holdDurationMs", holdDurationMs)
         if (isSwipe) obj.put("isSwipe", isSwipe)
         if (swipeTargetNodeId != null) obj.put("swipeTargetNodeId", swipeTargetNodeId)
         if (swipeEndX != 0) obj.put("swipeEndX", swipeEndX)
@@ -161,6 +189,13 @@ data class TargetNode(
             }
             obj.put("swipePathPoints", pointArr)
         }
+        if (managerRoutes.isNotEmpty()) {
+            val routesArr = org.json.JSONArray()
+            for (r in managerRoutes) {
+                routesArr.put(r.toJson())
+            }
+            obj.put("managerRoutes", routesArr)
+        }
         return obj
     }
 
@@ -172,6 +207,12 @@ data class TargetNode(
             val mRunPar = obj.optBoolean("macroRunParallel", false)
             val tImage = obj.optString("targetImageBase64", null).takeIf { it?.isNotEmpty() == true }
             val tText = obj.optString("targetText", null).takeIf { it?.isNotEmpty() == true }
+            val dynColor = obj.optBoolean("dynamicColorUpdate", false)
+            val dynLookback = obj.optLong("dynamicColorLookbackMs", 0L)
+            val compNodeId = if (obj.has("compareToNodeId")) obj.getInt("compareToNodeId") else null
+            val compX = if (obj.has("colorCompareX")) obj.getInt("colorCompareX") else null
+            val compY = if (obj.has("colorCompareY")) obj.getInt("colorCompareY") else null
+            val smartOcr = obj.optBoolean("isSmartOcr", false)
             
             val pathPoints = mutableListOf<Pair<Float, Float>>()
             if (obj.has("swipePathPoints")) {
@@ -194,6 +235,7 @@ data class TargetNode(
                     ))
                 }
             }
+            val hasAnyConditionData = tColor != null || tImage != null || tText != null || dynColor || compNodeId != null || compX != null || smartOcr
             return TargetNode(
                 id = obj.getInt("id"),
                 type = NodeType.valueOf(obj.getString("type")),
@@ -205,13 +247,16 @@ data class TargetNode(
                 targetImageBase64 = tImage,
                 targetText = tText,
                 targetLanguage = obj.optString("targetLanguage", "rus"),
-                triggerMode = if (tMode == 0 && tColor == null && tImage == null && tText == null) -1 else tMode,
-                dynamicColorUpdate = obj.optBoolean("dynamicColorUpdate", false),
-                compareToNodeId = if (obj.has("compareToNodeId")) obj.getInt("compareToNodeId") else null,
-                colorCompareX = if (obj.has("colorCompareX")) obj.getInt("colorCompareX") else null,
-                colorCompareY = if (obj.has("colorCompareY")) obj.getInt("colorCompareY") else null,
+                triggerMode = if (tMode == 0 && !hasAnyConditionData) -1 else tMode,
+                dynamicColorUpdate = dynColor,
+                dynamicColorLookbackMs = dynLookback,
+                compareToNodeId = compNodeId,
+                colorCompareX = compX,
+                colorCompareY = compY,
                 imageThreshold = obj.optDouble("imageThreshold", 80.0).toFloat(),
                 searchRadius = obj.optInt("searchRadius", 0),
+                imageClickFoundCenter = obj.optBoolean("imageClickFoundCenter", false),
+                imageFullScreenSearch = obj.optBoolean("imageFullScreenSearch", false),
                 delayAfterMs = obj.optLong("delayAfterMs", 300L),
                 randomizeDelayMs = obj.optLong("randomizeDelayMs", 0L),
                 randomizeRadius = obj.optInt("randomizeRadius", 0),
@@ -225,6 +270,8 @@ data class TargetNode(
                 sizeScale = obj.optDouble("sizeScale", 1.0).toFloat(),
                 syncWithNodeIds = obj.optString("syncWithNodeIds", ""),
                 clickDurationMs = obj.optLong("clickDurationMs", 30L),
+                isHold = obj.optBoolean("isHold", false),
+                holdDurationMs = obj.optLong("holdDurationMs", 1000L),
                 isSwipe = obj.optBoolean("isSwipe", false),
                 swipeTargetNodeId = if (obj.has("swipeTargetNodeId")) obj.getInt("swipeTargetNodeId") else null,
                 swipeEndX = obj.optInt("swipeEndX", 0),
