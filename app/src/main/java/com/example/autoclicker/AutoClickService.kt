@@ -2929,8 +2929,9 @@ class AutoClickService : AccessibilityService() {
                 if (firstProfileJson != null) {
                     try {
                         loadProfileFromJson(firstProfileJson, append = append)
-                        if (firstProfileName != null) currentProfileName = firstProfileName
-                        android.widget.Toast.makeText(this, "Загружен: $firstProfileName", android.widget.Toast.LENGTH_SHORT).show()
+                        if (firstProfileName != null) {
+                            android.widget.Toast.makeText(this, "Загружен: $firstProfileName", android.widget.Toast.LENGTH_SHORT).show()
+                        }
                     } catch (e: Exception) {
                         e.printStackTrace()
                     }
