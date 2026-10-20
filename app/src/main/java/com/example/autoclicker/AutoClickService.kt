@@ -126,9 +126,12 @@ class AutoClickService : AccessibilityService() {
     }
 
     fun getEffectiveOcrSuffixes(node: TargetNode): String {
+        if (node.ocrSuffixSetName.isNotBlank()) {
+            val map = getSuffixSetsMap()
+            map[node.ocrSuffixSetName]?.let { return it }
+        }
         if (node.ocrCustomSuffixes.isNotBlank()) return node.ocrCustomSuffixes
-        val map = getSuffixSetsMap()
-        return map[node.ocrSuffixSetName] ?: "k:1000,m:1000000,b:1000000000,t:1000000000000,к:1000,м:1000000,б:1000000000,т:1000000000000"
+        return "k:1000,m:1000000,b:1000000000,t:1000000000000,к:1000,м:1000000,б:1000000000,т:1000000000000"
     }
 
     private fun parseAllNumericValues(text: String, suffixes: String): List<Double> {

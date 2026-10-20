@@ -3668,7 +3668,7 @@ class UIManager(private val service: AutoClickService) {
         })
 
         val smartOcrSufEdit = EditText(service).apply {
-            setText(service.getEffectiveSuffixes(node))
+            setText(service.getEffectiveOcrSuffixes(node))
             hint = "k:1000, m:1000000, b:1000000000"
             setHintTextColor(Color.parseColor("#78909C"))
             setTextColor(Color.WHITE)
@@ -3688,17 +3688,20 @@ class UIManager(private val service: AutoClickService) {
             }
             val setSpinner = Spinner(service).apply {
                 adapter = createThemedSpinnerAdapter(setNames.toTypedArray())
-                val curIdx = if (node.ocrSuffixSetName != null) setNames.indexOf(node.ocrSuffixSetName!!).coerceAtLeast(0) else 0
+                val curIdx = if (node.ocrSuffixSetName.isNotEmpty()) setNames.indexOf(node.ocrSuffixSetName).coerceAtLeast(0) else 0
                 setSelection(curIdx)
                 layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f)
                 onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
                     override fun onItemSelected(parent: AdapterView<*>?, view: View?, pos: Int, id: Long) {
                         if (pos == 0) {
-                            node.ocrSuffixSetName = null
+                            node.ocrSuffixSetName = ""
                         } else {
                             val chosenName = setNames[pos]
                             node.ocrSuffixSetName = chosenName
-                            setsMap[chosenName]?.let { smartOcrSufEdit.setText(it) }
+                            setsMap[chosenName]?.let {
+                                smartOcrSufEdit.setText(it)
+                                node.ocrCustomSuffixes = it
+                            }
                         }
                     }
                     override fun onNothingSelected(parent: AdapterView<*>?) {}
@@ -3712,9 +3715,9 @@ class UIManager(private val service: AutoClickService) {
                 layoutParams = LinearLayout.LayoutParams(dpToPx(34), dpToPx(32)).apply { setMargins(dpToPx(4), 0, 0, 0) }
                 setOnClickListener {
                     val selName = node.ocrSuffixSetName
-                    if (selName != null && setsMap.containsKey(selName)) {
+                    if (selName.isNotEmpty() && setsMap.containsKey(selName)) {
                         service.deleteSuffixSet(selName)
-                        node.ocrSuffixSetName = null
+                        node.ocrSuffixSetName = ""
                         Toast.makeText(service, "Набор «$selName» удалён", Toast.LENGTH_SHORT).show()
                         rebuildSuffixSetSpinner()
                     } else {
@@ -3779,7 +3782,7 @@ class UIManager(private val service: AutoClickService) {
         }
         val setNameInput = EditText(service).apply {
             hint = "Имя набора (напр. Моя Игра)"
-            setText(node.ocrSuffixSetName ?: "")
+            setText(node.ocrSuffixSetName)
             setHintTextColor(Color.parseColor("#78909C"))
             setTextColor(Color.WHITE)
             setScaledTextSize(11.5f)
@@ -3791,7 +3794,7 @@ class UIManager(private val service: AutoClickService) {
             setPadding(dpToPx(10), 0, dpToPx(10), 0)
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dpToPx(32))
             setOnClickListener {
-                val setName = setNameInput.text.toString().trim().ifEmpty { node.ocrSuffixSetName ?: "Набор ${service.getSuffixSetsMap().size + 1}" }
+                val setName = setNameInput.text.toString().trim().ifEmpty { node.ocrSuffixSetName.ifEmpty { "Набор ${service.getSuffixSetsMap().size + 1}" } }
                 val sufVal = smartOcrSufEdit.text.toString().trim()
                 service.saveSuffixSet(setName, sufVal)
                 node.ocrSuffixSetName = setName
@@ -4083,8 +4086,8 @@ class UIManager(private val service: AutoClickService) {
                     node.ocrOperator = arrayOf("==", "!=", ">", "<", ">=", "<=")[smartOcrOpSpinner.selectedItemPosition]
                     node.ocrTargetValue = smartOcrValEdit.text.toString().toDoubleOrNull() ?: 0.0
                     node.ocrCustomSuffixes = smartOcrSufEdit.text.toString()
-                    if (node.ocrSuffixSetName != null) {
-                        service.saveSuffixSet(node.ocrSuffixSetName!!, node.ocrCustomSuffixes)
+                    if (node.ocrSuffixSetName.isNotEmpty()) {
+                        service.saveSuffixSet(node.ocrSuffixSetName, node.ocrCustomSuffixes)
                     }
                     val selPos = ocrCompareTargetSpinner.selectedItemPosition
                     if (node.isSmartOcr) {
@@ -4527,8 +4530,8 @@ class UIManager(private val service: AutoClickService) {
             }
             node.ocrTargetValue = smartOcrValEdit.text.toString().toDoubleOrNull() ?: 0.0
             node.ocrCustomSuffixes = smartOcrSufEdit.text.toString()
-            if (node.ocrSuffixSetName != null) {
-                service.saveSuffixSet(node.ocrSuffixSetName!!, node.ocrCustomSuffixes)
+            if (node.ocrSuffixSetName.isNotEmpty()) {
+                service.saveSuffixSet(node.ocrSuffixSetName, node.ocrCustomSuffixes)
             }
             node.syncWithNodeIds = syncEdit.text.toString().filter { it.isDigit() || it == ',' }
             node.swipeDurationMs = getSwipeDurRowMs()
