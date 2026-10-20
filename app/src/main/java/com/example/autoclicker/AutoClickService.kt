@@ -2756,6 +2756,23 @@ class AutoClickService : AccessibilityService() {
         android.widget.Toast.makeText(this, "Сценарий '$name' удален", android.widget.Toast.LENGTH_SHORT).show()
     }
 
+    fun getRealScreenDimensions(): Pair<Int, Int> {
+        val wm = getSystemService(android.content.Context.WINDOW_SERVICE) as? android.view.WindowManager
+        if (wm != null) {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                val bounds = wm.maximumWindowMetrics.bounds
+                return Pair(bounds.width(), bounds.height())
+            } else {
+                val dm = android.util.DisplayMetrics()
+                @Suppress("DEPRECATION")
+                wm.defaultDisplay.getRealMetrics(dm)
+                return Pair(dm.widthPixels, dm.heightPixels)
+            }
+        }
+        val dm = resources.displayMetrics
+        return Pair(dm.widthPixels, dm.heightPixels)
+    }
+
     fun autoSave() {
         val prefs = getSharedPreferences("AutoClickerProfiles", android.content.Context.MODE_PRIVATE)
         if (nodes.isEmpty()) {
@@ -2763,9 +2780,9 @@ class AutoClickService : AccessibilityService() {
             return
         }
         val obj = org.json.JSONObject()
-        val metrics = resources.displayMetrics
-        obj.put("screenWidth", metrics.widthPixels)
-        obj.put("screenHeight", metrics.heightPixels)
+        val (screenWidth, screenHeight) = getRealScreenDimensions()
+        obj.put("screenWidth", screenWidth)
+        obj.put("screenHeight", screenHeight)
         val arr = org.json.JSONArray()
         for (node in nodes) {
             arr.put(node.toJson())
@@ -2777,9 +2794,9 @@ class AutoClickService : AccessibilityService() {
     fun saveProfile(name: String) {
         val prefs = getSharedPreferences("AutoClickerProfiles", android.content.Context.MODE_PRIVATE)
         val obj = org.json.JSONObject()
-        val metrics = resources.displayMetrics
-        obj.put("screenWidth", metrics.widthPixels)
-        obj.put("screenHeight", metrics.heightPixels)
+        val (screenWidth, screenHeight) = getRealScreenDimensions()
+        obj.put("screenWidth", screenWidth)
+        obj.put("screenHeight", screenHeight)
         val arr = org.json.JSONArray()
         for (node in nodes) {
             arr.put(node.toJson())
@@ -2791,9 +2808,9 @@ class AutoClickService : AccessibilityService() {
 
     fun exportProfileToClipboard() {
         val obj = org.json.JSONObject()
-        val metrics = resources.displayMetrics
-        obj.put("screenWidth", metrics.widthPixels)
-        obj.put("screenHeight", metrics.heightPixels)
+        val (screenWidth, screenHeight) = getRealScreenDimensions()
+        obj.put("screenWidth", screenWidth)
+        obj.put("screenHeight", screenHeight)
         val arr = org.json.JSONArray()
         for (node in nodes) {
             arr.put(node.toJson())
@@ -2841,25 +2858,83 @@ class AutoClickService : AccessibilityService() {
     }
 
     fun loadProfileFromJson(jsonText: String, append: Boolean = false) {
-        val tokener = org.json.JSONTokener(jsonText)
+        var cleanText = jsonText.trim()
+        if (cleanText.startsWith("```")) {
+            cleanText = cleanText.substringAfter("\n")
+            if (cleanText.contains("```")) {
+                cleanText = cleanText.substringBeforeLast("```")
+            }
+            cleanText = cleanText.trim()
+        }
+        val firstBrace = cleanText.indexOf('{')
+        val firstBracket = cleanText.indexOf('[')
+        val startIndex = when {
+            firstBrace >= 0 && firstBracket >= 0 -> minOf(firstBrace, firstBracket)
+            firstBrace >= 0 -> firstBrace
+            firstBracket >= 0 -> firstBracket
+            else -> 0
+        }
+        if (startIndex > 0) {
+            cleanText = cleanText.substring(startIndex)
+        }
+        val lastBrace = cleanText.lastIndexOf('}')
+        val lastBracket = cleanText.lastIndexOf(']')
+        val endIndex = when {
+            lastBrace >= 0 && lastBracket >= 0 -> maxOf(lastBrace, lastBracket)
+            lastBrace >= 0 -> lastBrace
+            lastBracket >= 0 -> lastBracket
+            else -> cleanText.length - 1
+        }
+        if (endIndex in 0 until cleanText.length - 1) {
+            cleanText = cleanText.substring(0, endIndex + 1)
+        }
+
+        val tokener = org.json.JSONTokener(cleanText)
         val root = tokener.nextValue()
-        if (root is org.json.JSONObject && root.optString("backupType") == "UpwellClickFullBackup") {
+
+        val isBackup = root is org.json.JSONObject && (
+            root.has("backupType") ||
+            root.has("profiles") ||
+            root.optString("backupType").isNotEmpty()
+        )
+
+        if (isBackup && root is org.json.JSONObject) {
             val profilesObj = root.optJSONObject("profiles")
             if (profilesObj != null) {
                 val prefs = getSharedPreferences("AutoClickerProfiles", android.content.Context.MODE_PRIVATE)
                 val edit = prefs.edit()
                 var count = 0
+                var firstProfileJson: String? = null
+                var firstProfileName: String? = null
                 val keys = profilesObj.keys()
                 while (keys.hasNext()) {
                     val k = keys.next()
-                    val v = profilesObj.optString(k)
+                    val rawVal = profilesObj.opt(k)
+                    val v = when (rawVal) {
+                        is org.json.JSONObject -> rawVal.toString()
+                        is String -> rawVal
+                        else -> rawVal?.toString() ?: ""
+                    }
                     if (v.isNotEmpty()) {
                         edit.putString(k, v)
+                        if (firstProfileJson == null) {
+                            firstProfileJson = v
+                            firstProfileName = k
+                        }
                         count++
                     }
                 }
                 edit.apply()
-                android.widget.Toast.makeText(this, "Восстановлено профилей из бэкапа: $count", android.widget.Toast.LENGTH_LONG).show()
+                android.widget.Toast.makeText(this, "Восстановлено профилей из бэкапа: $count", android.widget.Toast.LENGTH_SHORT).show()
+                if (firstProfileJson != null) {
+                    try {
+                        loadProfileFromJson(firstProfileJson, append = append)
+                        if (firstProfileName != null) currentProfileName = firstProfileName
+                        android.widget.Toast.makeText(this, "Загружен: $firstProfileName", android.widget.Toast.LENGTH_SHORT).show()
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                }
             }
             return
         }
@@ -2869,15 +2944,29 @@ class AutoClickService : AccessibilityService() {
         var scaleY = 1f
         
         if (root is org.json.JSONObject) {
-            arr = root.getJSONArray("nodes")
-            if (root.has("screenWidth") && root.has("screenHeight")) {
-                val origWidth = root.getInt("screenWidth")
-                val origHeight = root.getInt("screenHeight")
-                val metrics = resources.displayMetrics
-                val curWidth = metrics.widthPixels
-                val curHeight = metrics.heightPixels
-                if (origWidth > 0 && curWidth > 0) scaleX = curWidth.toFloat() / origWidth
-                if (origHeight > 0 && curHeight > 0) scaleY = curHeight.toFloat() / origHeight
+            val targetObj = if (root.has("profile") && root.optJSONObject("profile") != null) {
+                root.getJSONObject("profile")
+            } else {
+                root
+            }
+            arr = when {
+                targetObj.has("nodes") -> targetObj.getJSONArray("nodes")
+                targetObj.has("points") -> targetObj.getJSONArray("points")
+                else -> throw Exception("JSON не содержит списка точек ('nodes')")
+            }
+            if (targetObj.has("screenWidth") && targetObj.has("screenHeight")) {
+                val origWidth = targetObj.getInt("screenWidth")
+                val origHeight = targetObj.getInt("screenHeight")
+                val (curWidth, curHeight) = getRealScreenDimensions()
+                if (origWidth > 0 && curWidth > 0 && origWidth != curWidth) {
+                    scaleX = curWidth.toFloat() / origWidth
+                }
+                if (origHeight > 0 && curHeight > 0 && origHeight != curHeight) {
+                    // If height difference is just due to navigation bar / system inset difference on same device, avoid squishing
+                    if (Math.abs(curHeight - origHeight) > 250 || curWidth != origWidth) {
+                        scaleY = curHeight.toFloat() / origHeight
+                    }
+                }
             }
         } else if (root is org.json.JSONArray) {
             arr = root

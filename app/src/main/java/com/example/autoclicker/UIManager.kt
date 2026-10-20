@@ -437,7 +437,7 @@ class UIManager(private val service: AutoClickService) {
                     }
                 }
                 service.saveHotbarItems(newItems)
-                updateHotbar(hotbarContainer!!)
+                hotbarContainer?.let { updateHotbar(it) }
             }
             .setNegativeButton("Отмена", null)
             .create()
@@ -910,9 +910,9 @@ class UIManager(private val service: AutoClickService) {
 
         var barFlags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
         if (isCaffeineEnabled) barFlags = barFlags or WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
-        val metrics = service.resources.displayMetrics
-        val safeX = hudX.coerceIn(0, (metrics.widthPixels - dpToPx(60)).coerceAtLeast(0))
-        val safeY = hudY.coerceIn(0, (metrics.heightPixels - dpToPx(60)).coerceAtLeast(0))
+        val (screenWidth, screenHeight) = getScreenDimensions()
+        val safeX = hudX.coerceIn(0, (screenWidth - dpToPx(60)).coerceAtLeast(0))
+        val safeY = hudY.coerceIn(0, (screenHeight - dpToPx(60)).coerceAtLeast(0))
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -941,11 +941,11 @@ class UIManager(private val service: AutoClickService) {
                 MotionEvent.ACTION_MOVE -> {
                     val dx = event.rawX - initialTouchX
                     val dy = event.rawY - initialTouchY
-                    val curMetrics = service.resources.displayMetrics
+                    val (realW, realH) = getScreenDimensions()
                     var newX = initialX + dx.toInt()
                     var newY = initialY + dy.toInt()
-                    newX = newX.coerceIn(0, (curMetrics.widthPixels - dpToPx(40)).coerceAtLeast(0))
-                    newY = newY.coerceIn(0, (curMetrics.heightPixels - dpToPx(40)).coerceAtLeast(0))
+                    newX = newX.coerceIn(0, (realW - dpToPx(40)).coerceAtLeast(0))
+                    newY = newY.coerceIn(0, (realH - dpToPx(40)).coerceAtLeast(0))
                     params.x = newX
                     params.y = newY
                     hudX = newX
@@ -984,13 +984,11 @@ class UIManager(private val service: AutoClickService) {
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    val metrics = service.resources.displayMetrics
+                    val (screenWidth, screenHeight) = getScreenDimensions()
                     var newX = initialX + (event.rawX - initialTouchX).toInt()
                     var newY = initialY + (event.rawY - initialTouchY).toInt()
-                    if (newX < 0) newX = 0
-                    if (newY < 0) newY = 0
-                    if (newX > metrics.widthPixels - dpToPx(30)) newX = metrics.widthPixels - dpToPx(30)
-                    if (newY > metrics.heightPixels - dpToPx(30)) newY = metrics.heightPixels - dpToPx(30)
+                    newX = newX.coerceIn(0, (screenWidth - dpToPx(50)).coerceAtLeast(0))
+                    newY = newY.coerceIn(0, (screenHeight - dpToPx(50)).coerceAtLeast(0))
                     params.x = newX
                     params.y = newY
                     windowManager.updateViewLayout(windowView, params)
@@ -1031,10 +1029,16 @@ class UIManager(private val service: AutoClickService) {
         }
     }
 
-    private fun getScreenDimensions(): Pair<Int, Int> {
-        val dm = android.util.DisplayMetrics()
-        windowManager.defaultDisplay.getRealMetrics(dm)
-        return Pair(dm.widthPixels, dm.heightPixels)
+    fun getScreenDimensions(): Pair<Int, Int> {
+        return if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            val bounds = windowManager.maximumWindowMetrics.bounds
+            Pair(bounds.width(), bounds.height())
+        } else {
+            val dm = android.util.DisplayMetrics()
+            @Suppress("DEPRECATION")
+            windowManager.defaultDisplay.getRealMetrics(dm)
+            Pair(dm.widthPixels, dm.heightPixels)
+        }
     }
 
     private fun getMenuContentLayoutParams(windowedHeightDp: Int): FrameLayout.LayoutParams {
@@ -2653,9 +2657,9 @@ class UIManager(private val service: AutoClickService) {
             setOnClickListener {
                 val name = nameEdit.text.toString().takeIf { it.isNotBlank() } ?: "AutoClickerProfile"
                 val obj = org.json.JSONObject()
-                val metrics = service.resources.displayMetrics
-                obj.put("screenWidth", metrics.widthPixels)
-                obj.put("screenHeight", metrics.heightPixels)
+                val (screenWidth, screenHeight) = getScreenDimensions()
+                obj.put("screenWidth", screenWidth)
+                obj.put("screenHeight", screenHeight)
                 val arr = org.json.JSONArray()
                 for (node in service.nodes) arr.put(node.toJson())
                 obj.put("nodes", arr)
@@ -2695,9 +2699,9 @@ class UIManager(private val service: AutoClickService) {
             setOnClickListener {
                 val name = nameEdit.text.toString().takeIf { it.isNotBlank() } ?: "AutoClickerProfile"
                 val obj = org.json.JSONObject()
-                val metrics = service.resources.displayMetrics
-                obj.put("screenWidth", metrics.widthPixels)
-                obj.put("screenHeight", metrics.heightPixels)
+                val (screenWidth, screenHeight) = getScreenDimensions()
+                obj.put("screenWidth", screenWidth)
+                obj.put("screenHeight", screenHeight)
                 val arr = org.json.JSONArray()
                 for (node in service.nodes) arr.put(node.toJson())
                 obj.put("nodes", arr)
@@ -4715,33 +4719,35 @@ class UIManager(private val service: AutoClickService) {
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    val metrics = service.resources.displayMetrics
-                    var newX = initialX + (event.rawX - initialTouchX).toInt()
-                    var newY = initialY + (event.rawY - initialTouchY).toInt()
-                    if (newX < 0) newX = 0
-                    if (newY < 0) newY = 0
-                    if (newX > metrics.widthPixels - dpToPx(30)) newX = metrics.widthPixels - dpToPx(30)
-                    if (newY > metrics.heightPixels - dpToPx(30)) newY = metrics.heightPixels - dpToPx(30)
-                    params.x = newX
-                    params.y = newY
+                    val (screenWidth, screenHeight) = getScreenDimensions()
+                    val half = dpToPx(15)
+                    var targetX = initialX + half + (event.rawX - initialTouchX).toInt()
+                    var targetY = initialY + half + (event.rawY - initialTouchY).toInt()
+                    targetX = targetX.coerceIn(0, screenWidth)
+                    targetY = targetY.coerceIn(0, screenHeight)
+                    params.x = targetX - half
+                    params.y = targetY - half
                     windowManager.updateViewLayout(view, params)
                     if (isStart) {
-                        node.compareZoneStartX = params.x + dpToPx(15)
-                        node.compareZoneStartY = params.y + dpToPx(15)
+                        node.compareZoneStartX = targetX
+                        node.compareZoneStartY = targetY
                     } else {
-                        node.compareZoneEndX = params.x + dpToPx(15)
-                        node.compareZoneEndY = params.y + dpToPx(15)
+                        node.compareZoneEndX = targetX
+                        node.compareZoneEndY = targetY
                     }
                     invalidateLines()
                     true
                 }
                 MotionEvent.ACTION_UP -> {
+                    val half = dpToPx(15)
+                    val targetX = (params.x + half).coerceIn(0, getScreenDimensions().first)
+                    val targetY = (params.y + half).coerceIn(0, getScreenDimensions().second)
                     if (isStart) {
-                        node.compareZoneStartX = params.x + dpToPx(15)
-                        node.compareZoneStartY = params.y + dpToPx(15)
+                        node.compareZoneStartX = targetX
+                        node.compareZoneStartY = targetY
                     } else {
-                        node.compareZoneEndX = params.x + dpToPx(15)
-                        node.compareZoneEndY = params.y + dpToPx(15)
+                        node.compareZoneEndX = targetX
+                        node.compareZoneEndY = targetY
                     }
                     invalidateLines()
                     service.autoSave()
@@ -4866,33 +4872,35 @@ class UIManager(private val service: AutoClickService) {
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    val metrics = service.resources.displayMetrics
-                    var newX = initialX + (event.rawX - initialTouchX).toInt()
-                    var newY = initialY + (event.rawY - initialTouchY).toInt()
-                    if (newX < 0) newX = 0
-                    if (newY < 0) newY = 0
-                    if (newX > metrics.widthPixels - dpToPx(30)) newX = metrics.widthPixels - dpToPx(30)
-                    if (newY > metrics.heightPixels - dpToPx(30)) newY = metrics.heightPixels - dpToPx(30)
-                    params.x = newX
-                    params.y = newY
+                    val (screenWidth, screenHeight) = getScreenDimensions()
+                    val half = dpToPx(15)
+                    var targetX = initialX + half + (event.rawX - initialTouchX).toInt()
+                    var targetY = initialY + half + (event.rawY - initialTouchY).toInt()
+                    targetX = targetX.coerceIn(0, screenWidth)
+                    targetY = targetY.coerceIn(0, screenHeight)
+                    params.x = targetX - half
+                    params.y = targetY - half
                     windowManager.updateViewLayout(view, params)
                     if (isStart) {
-                        node.textZoneStartX = params.x + dpToPx(15)
-                        node.textZoneStartY = params.y + dpToPx(15)
+                        node.textZoneStartX = targetX
+                        node.textZoneStartY = targetY
                     } else {
-                        node.textZoneEndX = params.x + dpToPx(15)
-                        node.textZoneEndY = params.y + dpToPx(15)
+                        node.textZoneEndX = targetX
+                        node.textZoneEndY = targetY
                     }
                     invalidateLines()
                     true
                 }
                 MotionEvent.ACTION_UP -> {
+                    val half = dpToPx(15)
+                    val targetX = (params.x + half).coerceIn(0, getScreenDimensions().first)
+                    val targetY = (params.y + half).coerceIn(0, getScreenDimensions().second)
                     if (isStart) {
-                        node.textZoneStartX = params.x + dpToPx(15)
-                        node.textZoneStartY = params.y + dpToPx(15)
+                        node.textZoneStartX = targetX
+                        node.textZoneStartY = targetY
                     } else {
-                        node.textZoneEndX = params.x + dpToPx(15)
-                        node.textZoneEndY = params.y + dpToPx(15)
+                        node.textZoneEndX = targetX
+                        node.textZoneEndY = targetY
                     }
                     invalidateLines()
                     service.autoSave()
@@ -4959,28 +4967,26 @@ class UIManager(private val service: AutoClickService) {
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    val metrics = service.resources.displayMetrics
-                    var newX = initialX + (event.rawX - initialTouchX).toInt()
-                    var newY = initialY + (event.rawY - initialTouchY).toInt()
-                    if (newX < 0) newX = 0
-                    if (newY < 0) newY = 0
-                    if (newX > metrics.widthPixels - dpToPx(30)) newX = metrics.widthPixels - dpToPx(30)
-                    if (newY > metrics.heightPixels - dpToPx(30)) newY = metrics.heightPixels - dpToPx(30)
-                    params.x = newX
-                    params.y = newY
+                    val (screenWidth, screenHeight) = getScreenDimensions()
+                    val half = dpToPx(20)
+                    var targetX = initialX + half + (event.rawX - initialTouchX).toInt()
+                    var targetY = initialY + half + (event.rawY - initialTouchY).toInt()
+                    targetX = targetX.coerceIn(0, screenWidth)
+                    targetY = targetY.coerceIn(0, screenHeight)
+                    params.x = targetX - half
+                    params.y = targetY - half
                     windowManager.updateViewLayout(view, params)
-                    val newEx = params.x + dpToPx(20)
-                    val newEy = params.y + dpToPx(20)
-                    node.colorCompareX = newEx
-                    node.colorCompareY = newEy
+                    node.colorCompareX = targetX
+                    node.colorCompareY = targetY
                     invalidateLines()
                     true
                 }
                 MotionEvent.ACTION_UP -> {
-                    val newEx = params.x + dpToPx(20)
-                    val newEy = params.y + dpToPx(20)
-                    node.colorCompareX = newEx
-                    node.colorCompareY = newEy
+                    val half = dpToPx(20)
+                    val targetX = (params.x + half).coerceIn(0, getScreenDimensions().first)
+                    val targetY = (params.y + half).coerceIn(0, getScreenDimensions().second)
+                    node.colorCompareX = targetX
+                    node.colorCompareY = targetY
                     invalidateLines()
                     service.autoSave()
                     true
@@ -5007,33 +5013,31 @@ class UIManager(private val service: AutoClickService) {
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    val metrics = service.resources.displayMetrics
-                    var newX = initialX + (event.rawX - initialTouchX).toInt()
-                    var newY = initialY + (event.rawY - initialTouchY).toInt()
-                    if (newX < 0) newX = 0
-                    if (newY < 0) newY = 0
-                    if (newX > metrics.widthPixels - dpToPx(30)) newX = metrics.widthPixels - dpToPx(30)
-                    if (newY > metrics.heightPixels - dpToPx(30)) newY = metrics.heightPixels - dpToPx(30)
-                    params.x = newX
-                    params.y = newY
+                    val (screenWidth, screenHeight) = getScreenDimensions()
+                    val half = dpToPx(30)
+                    var targetX = initialX + half + (event.rawX - initialTouchX).toInt()
+                    var targetY = initialY + half + (event.rawY - initialTouchY).toInt()
+                    targetX = targetX.coerceIn(0, screenWidth)
+                    targetY = targetY.coerceIn(0, screenHeight)
+                    params.x = targetX - half
+                    params.y = targetY - half
                     windowManager.updateViewLayout(view, params)
-                    val newEx = params.x + dpToPx(30)
-                    val newEy = params.y + dpToPx(30)
-                    if (newEx != node.swipeEndX || newEy != node.swipeEndY) {
+                    if (targetX != node.swipeEndX || targetY != node.swipeEndY) {
                         node.swipePathPoints = emptyList() // clear since user manually altered end position
-                        node.swipeEndX = newEx
-                        node.swipeEndY = newEy
+                        node.swipeEndX = targetX
+                        node.swipeEndY = targetY
                     }
                     invalidateLines()
                     true
                 }
                 MotionEvent.ACTION_UP -> {
-                    val newEx = params.x + dpToPx(30)
-                    val newEy = params.y + dpToPx(30)
-                    if (newEx != node.swipeEndX || newEy != node.swipeEndY) {
+                    val half = dpToPx(30)
+                    val targetX = (params.x + half).coerceIn(0, getScreenDimensions().first)
+                    val targetY = (params.y + half).coerceIn(0, getScreenDimensions().second)
+                    if (targetX != node.swipeEndX || targetY != node.swipeEndY) {
                         node.swipePathPoints = emptyList()
-                        node.swipeEndX = newEx
-                        node.swipeEndY = newEy
+                        node.swipeEndX = targetX
+                        node.swipeEndY = targetY
                     }
                     invalidateLines()
                     service.autoSave()
@@ -5061,24 +5065,21 @@ class UIManager(private val service: AutoClickService) {
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    val metrics = service.resources.displayMetrics
-                    var newX = initialX + (event.rawX - initialTouchX).toInt()
-                    var newY = initialY + (event.rawY - initialTouchY).toInt()
-                    if (newX < 0) newX = 0
-                    if (newY < 0) newY = 0
-                    if (newX > metrics.widthPixels - dpToPx(30)) newX = metrics.widthPixels - dpToPx(30)
-                    if (newY > metrics.heightPixels - dpToPx(30)) newY = metrics.heightPixels - dpToPx(30)
-                    params.x = newX
-                    params.y = newY
+                    val (screenWidth, screenHeight) = getScreenDimensions()
+                    val half = dpToPx(30)
+                    var targetX = initialX + half + (event.rawX - initialTouchX).toInt()
+                    var targetY = initialY + half + (event.rawY - initialTouchY).toInt()
+                    targetX = targetX.coerceIn(0, screenWidth)
+                    targetY = targetY.coerceIn(0, screenHeight)
+                    params.x = targetX - half
+                    params.y = targetY - half
                     windowManager.updateViewLayout(view, params)
                     if (node != null) {
-                        val nx = params.x + dpToPx(30)
-                        val ny = params.y + dpToPx(30)
-                        val dx = nx - node.x
-                        val dy = ny - node.y
+                        val dx = targetX - node.x
+                        val dy = targetY - node.y
                         if (dx != 0 || dy != 0) {
-                            node.x = nx
-                            node.y = ny
+                            node.x = targetX
+                            node.y = targetY
                             if (node.swipePathPoints.isNotEmpty()) {
                                 node.swipePathPoints = node.swipePathPoints.map { Pair(it.first + dx, it.second + dy) }
                             }
@@ -5089,6 +5090,11 @@ class UIManager(private val service: AutoClickService) {
                 }
                 MotionEvent.ACTION_UP -> {
                     if (node != null) {
+                        val half = dpToPx(30)
+                        val targetX = (params.x + half).coerceIn(0, getScreenDimensions().first)
+                        val targetY = (params.y + half).coerceIn(0, getScreenDimensions().second)
+                        node.x = targetX
+                        node.y = targetY
                         if (Math.abs(event.rawX - initialTouchX) >= 10 || Math.abs(event.rawY - initialTouchY) >= 10) {
                             service.autoSave()
                         }
@@ -5316,6 +5322,7 @@ class UIManager(private val service: AutoClickService) {
             flags = flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
         }
 
+        val (screenWidth, screenHeight) = getScreenDimensions()
         val params = WindowManager.LayoutParams(
             dpToPx(60), dpToPx(60),
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
@@ -5323,8 +5330,8 @@ class UIManager(private val service: AutoClickService) {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = if (startX != null) startX - dpToPx(30) else (windowManager.defaultDisplay.width / 2 - dpToPx(30))
-            y = if (startY != null) startY - dpToPx(30) else (windowManager.defaultDisplay.height / 2 - dpToPx(30))
+            x = if (startX != null) startX - dpToPx(30) else (screenWidth / 2 - dpToPx(30))
+            y = if (startY != null) startY - dpToPx(30) else (screenHeight / 2 - dpToPx(30))
         }
         node.x = params.x + dpToPx(30)
         node.y = params.y + dpToPx(30)
@@ -5497,13 +5504,11 @@ class UIManager(private val service: AutoClickService) {
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    val metrics = service.resources.displayMetrics
+                    val (screenWidth, screenHeight) = getScreenDimensions()
                     var newX = initialX + (event.rawX - initialTouchX).toInt()
                     var newY = initialY + (event.rawY - initialTouchY).toInt()
-                    if (newX < 0) newX = 0
-                    if (newY < 0) newY = 0
-                    if (newX > metrics.widthPixels - dpToPx(30)) newX = metrics.widthPixels - dpToPx(30)
-                    if (newY > metrics.heightPixels - dpToPx(30)) newY = metrics.heightPixels - dpToPx(30)
+                    newX = newX.coerceIn(0, (screenWidth - dpToPx(30)).coerceAtLeast(0))
+                    newY = newY.coerceIn(0, (screenHeight - dpToPx(30)).coerceAtLeast(0))
                     params.x = newX
                     params.y = newY
                     windowManager.updateViewLayout(layout, params)

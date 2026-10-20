@@ -122,18 +122,55 @@ class MainActivity : Activity() {
                 } else if (requestCode == REQ_IMPORT) {
                     try {
                         val content = contentResolver.openInputStream(uri)?.bufferedReader().use { it?.readText() }
-                        if (content != null) {
+                        if (!content.isNullOrBlank()) {
                             val instance = AutoClickService.instance
                             if (instance != null) {
                                 instance.loadProfileFromJson(content)
                                 android.widget.Toast.makeText(this, "Профиль успешно импортирован", android.widget.Toast.LENGTH_SHORT).show()
                             } else {
-                                android.widget.Toast.makeText(this, "Служба не запущена", android.widget.Toast.LENGTH_SHORT).show()
+                                try {
+                                    var cleanText = content.trim()
+                                    if (cleanText.startsWith("```")) {
+                                        cleanText = cleanText.substringAfter("\n").substringBeforeLast("```").trim()
+                                    }
+                                    val tokener = org.json.JSONTokener(cleanText)
+                                    val root = tokener.nextValue()
+                                    if (root is org.json.JSONObject && (root.has("backupType") || root.has("profiles"))) {
+                                        val profilesObj = root.optJSONObject("profiles")
+                                        if (profilesObj != null) {
+                                            val prefs = getSharedPreferences("AutoClickerProfiles", android.content.Context.MODE_PRIVATE)
+                                            val edit = prefs.edit()
+                                            var count = 0
+                                            val keys = profilesObj.keys()
+                                            while (keys.hasNext()) {
+                                                val k = keys.next()
+                                                val rawVal = profilesObj.opt(k)
+                                                val v = when (rawVal) {
+                                                    is org.json.JSONObject -> rawVal.toString()
+                                                    is String -> rawVal
+                                                    else -> rawVal?.toString() ?: ""
+                                                }
+                                                if (v.isNotEmpty()) {
+                                                    edit.putString(k, v)
+                                                    count++
+                                                }
+                                            }
+                                            edit.apply()
+                                            android.widget.Toast.makeText(this, "Сохранено $count профилей в память! Запустите автокликер.", android.widget.Toast.LENGTH_LONG).show()
+                                        }
+                                    } else {
+                                        pendingImportData = content
+                                        android.widget.Toast.makeText(this, "Сценарий готов к загрузке. Запустите сервис кликера.", android.widget.Toast.LENGTH_LONG).show()
+                                    }
+                                } catch (_: Exception) {
+                                    pendingImportData = content
+                                    android.widget.Toast.makeText(this, "Служба кликера не запущена", android.widget.Toast.LENGTH_SHORT).show()
+                                }
                             }
                         }
                     } catch (e: Exception) {
                         e.printStackTrace()
-                        android.widget.Toast.makeText(this, "Ошибка загрузки", android.widget.Toast.LENGTH_SHORT).show()
+                        android.widget.Toast.makeText(this, "Ошибка загрузки: ${e.localizedMessage ?: "неверный формат"}", android.widget.Toast.LENGTH_LONG).show()
                     }
                 } else if (requestCode == REQ_IMPORT_IMAGE) {
                     try {
