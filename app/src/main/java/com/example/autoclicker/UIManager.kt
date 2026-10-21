@@ -2287,6 +2287,67 @@ class UIManager(private val service: AutoClickService) {
         })
         uiCard.addView(scaleLayout)
 
+        val currentAvgNodeScale = service.nodes.firstOrNull()?.sizeScale ?: 1.0f
+        val nodeScaleLayout = LinearLayout(service).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dpToPx(2), 0, dpToPx(6))
+        }
+        nodeScaleLayout.addView(TextView(service).apply {
+            text = "Размер всех меток:"
+            setTextColor(Color.WHITE)
+            setScaledTextSize(12.5f)
+            layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        val nodeScaleValTv = TextView(service).apply {
+            text = "${(currentAvgNodeScale * 100).toInt()}%"
+            setTextColor(Color.WHITE)
+            setTypeface(null, Typeface.BOLD)
+            setScaledTextSize(12.5f)
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(dpToPx(48), WindowManager.LayoutParams.WRAP_CONTENT)
+        }
+        nodeScaleLayout.addView(Button(service).apply {
+            text = "−"
+            stylePillButton(this, "#283246", null, 8, 14f)
+            setPadding(0, 0, 0, 0)
+            layoutParams = LinearLayout.LayoutParams(dpToPx(34), dpToPx(30))
+            setOnClickListener {
+                val base = service.nodes.firstOrNull()?.sizeScale ?: 1.0f
+                val next = (Math.round((base - 0.1f) * 10f) / 10f).coerceIn(0.5f, 2.5f)
+                service.nodes.forEach { n ->
+                    n.sizeScale = next
+                    nodeViews[n.id]?.invalidate()
+                    swipeEndViews[n.id]?.invalidate()
+                    colorCompareViews[n.id]?.invalidate()
+                }
+                nodeScaleValTv.text = "${(next * 100).toInt()}%"
+                invalidateLines()
+                service.autoSave()
+            }
+        })
+        nodeScaleLayout.addView(nodeScaleValTv)
+        nodeScaleLayout.addView(Button(service).apply {
+            text = "+"
+            stylePillButton(this, "#283246", null, 8, 14f)
+            setPadding(0, 0, 0, 0)
+            layoutParams = LinearLayout.LayoutParams(dpToPx(34), dpToPx(30))
+            setOnClickListener {
+                val base = service.nodes.firstOrNull()?.sizeScale ?: 1.0f
+                val next = (Math.round((base + 0.1f) * 10f) / 10f).coerceIn(0.5f, 2.5f)
+                service.nodes.forEach { n ->
+                    n.sizeScale = next
+                    nodeViews[n.id]?.invalidate()
+                    swipeEndViews[n.id]?.invalidate()
+                    colorCompareViews[n.id]?.invalidate()
+                }
+                nodeScaleValTv.text = "${(next * 100).toInt()}%"
+                invalidateLines()
+                service.autoSave()
+            }
+        })
+        uiCard.addView(nodeScaleLayout)
+
         uiCard.addView(android.widget.CheckBox(service).apply {
             text = "Кнопка «Скрыть метки» (👁) на панели"
             setTextColor(Color.WHITE)
@@ -2733,267 +2794,77 @@ class UIManager(private val service: AutoClickService) {
         ioCard.addView(shareAndBackupRow)
         layout.addView(ioCard)
 
-        val presetsCard = LinearLayout(service).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dpToPx(10), dpToPx(8), dpToPx(10), dpToPx(10))
-            background = android.graphics.drawable.GradientDrawable().apply {
-                setColor(Color.parseColor("#181C26"))
-                cornerRadius = dpToPx(12).toFloat()
-                setStroke(dpToPx(1), Color.parseColor("#263238"))
-            }
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                setMargins(0, dpToPx(8), 0, 0)
-            }
-        }
-        presetsCard.addView(TextView(service).apply {
-            text = "📚 Примеры сложных скриптов (шаблоны)"
-            setTextColor(Color.parseColor("#FFD54F"))
-            setTypeface(null, Typeface.BOLD)
-            setScaledTextSize(12.5f)
-            setPadding(0, 0, 0, dpToPx(6))
-        })
-        val presetItems = listOf(
-            "💖 Радужное сердце (7 цветов + концентрические кривые)" to { buildRainbowHeartPresetJson() },
-            "🐉 Фигурные свайпы (Восьмёрка + Спираль + Зигзаг)" to { buildComplexSwipesPresetJson() },
-            "🧠 Умный авто-фарм (Менеджер + OCR + Цвет + Циклы)" to { buildSmartFarmPresetJson() },
-            "⚡ Мультитач Комбо (Зажатие + серия антидетект-тапов)" to { buildMultitouchComboPresetJson() }
-        )
-        for ((title, builder) in presetItems) {
-            presetsCard.addView(Button(service).apply {
-                text = title
-                stylePillButton(this, "#23293A", null, 8, 11f)
-                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dpToPx(34)).apply {
-                    setMargins(0, 0, 0, dpToPx(5))
-                }
-                setOnClickListener {
-                    service.loadProfileFromJson(builder(), append = false)
-                    recreateFloatingControlBar()
-                    showMainMenu()
-                }
-            })
-        }
-        layout.addView(presetsCard)
-
         scrollRoot.addView(layout)
         menuContentContainer.addView(scrollRoot)
     }
 
-    private fun buildRainbowHeartPresetJson(): String {
-        val obj = org.json.JSONObject()
-        obj.put("screenWidth", 1272)
-        obj.put("screenHeight", 2800)
-        val nodes = org.json.JSONArray()
-        // Node 1: Palette button
-        nodes.put(org.json.JSONObject().apply {
-            put("id", 1); put("type", "CLICK"); put("x", 320); put("y", 2670)
-            put("clickDurationMs", 45); put("delayAfterMs", 280); put("crosshairColor", -65536)
-        })
-        val swatches = listOf(
-            Triple(2, 320, 2320) to -65536,     // Red (scale 16 -> 14)
-            Triple(4, 530, 2320) to -26368,     // Orange (scale 12.5 -> 10.5)
-            Triple(6, 620, 2320) to -256,       // Yellow (scale 9.0 -> 7.5)
-            Triple(8, 720, 2320) to -16711936,  // Green (scale 6.0 -> 4.8)
-            Triple(10, 815, 2320) to -16711681, // Cyan (scale 3.8 -> 2.8)
-            Triple(12, 165, 2410) to -16744193, // Blue (scale 2.0 -> 1.3)
-            Triple(14, 255, 2410) to -65281     // Purple (scale 0.8 -> 0.2)
-        )
-        val scales = listOf(
-            listOf(16.0, 14.2),
-            listOf(12.5, 10.8),
-            listOf(9.2, 7.6),
-            listOf(6.2, 4.8),
-            listOf(3.6, 2.5),
-            listOf(1.7, 1.0),
-            listOf(0.5)
-        )
-        val cx = 636.0
-        val cy = 1120.0
-        fun heartPt(t: Double, s: Double): Pair<Int, Int> {
-            val hx = 16.0 * Math.pow(Math.sin(t), 3.0)
-            val hy = -(13.0 * Math.cos(t) - 5.0 * Math.cos(2.0 * t) - 2.0 * Math.cos(3.0 * t) - Math.cos(4.0 * t))
-            return Pair(Math.round(cx + hx * s).toInt(), Math.round(cy + hy * s + (16.0 - s) * 2.5).toInt())
+    private fun createColorRow(title: String, initialColor: Int, onColorSelected: (Int) -> Unit): View {
+        val layout = LinearLayout(service).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dpToPx(4), 0, dpToPx(6))
         }
-        for (i in swatches.indices) {
-            val (swInfo, colorInt) = swatches[i]
-            val (swId, swX, swY) = swInfo
-            val drawId = swId + 1
-            nodes.put(org.json.JSONObject().apply {
-                put("id", swId); put("type", "CLICK"); put("x", swX); put("y", swY)
-                put("clickDurationMs", 45); put("delayAfterMs", 240); put("crosshairColor", colorInt)
-                put("nextNodeIdOnSuccess", drawId)
-                if (i > 0) put("skipSequentialExecution", true)
-            })
-            val pts = mutableListOf<Pair<Int, Int>>()
-            for (s in scales[i]) {
-                val steps = 36
-                for (k in 0..steps) {
-                    val t = 2.0 * Math.PI * k / steps
-                    pts.add(heartPt(t, s))
+        layout.addView(TextView(service).apply {
+            text = title
+            setTextColor(Color.parseColor("#ECEFF1"))
+            setScaledTextSize(12f)
+            setPadding(0, 0, 0, dpToPx(4))
+        })
+
+        val scroll = android.widget.HorizontalScrollView(service).apply {
+            isHorizontalScrollBarEnabled = false
+        }
+        val colorsLayout = LinearLayout(service).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val colors = intArrayOf(
+            Color.RED,
+            Color.parseColor("#FF9800"),
+            Color.YELLOW,
+            Color.GREEN,
+            Color.CYAN,
+            Color.BLUE,
+            Color.parseColor("#9C27B0"),
+            Color.MAGENTA,
+            Color.WHITE,
+            Color.BLACK
+        )
+
+        var selectedColor = initialColor
+        val swatchButtons = mutableListOf<Pair<Int, View>>()
+
+        fun updateSwatchBorders() {
+            for ((c, v) in swatchButtons) {
+                val isSel = (c == selectedColor)
+                v.background = android.graphics.drawable.GradientDrawable().apply {
+                    shape = android.graphics.drawable.GradientDrawable.OVAL
+                    setColor(c)
+                    setStroke(
+                        dpToPx(if (isSel) 3 else 1),
+                        if (isSel) (if (c == Color.WHITE || c == Color.YELLOW) Color.parseColor("#00E676") else Color.WHITE) else Color.parseColor("#455A64")
+                    )
                 }
             }
-            val start = pts.first()
-            val end = pts.last()
-            val pathArr = org.json.JSONArray()
-            for (idx in 1 until pts.lastIndex) {
-                pathArr.put(org.json.JSONObject().apply {
-                    put("x", pts[idx].first); put("y", pts[idx].second)
-                })
+        }
+
+        for (c in colors) {
+            val btn = View(service).apply {
+                layoutParams = LinearLayout.LayoutParams(dpToPx(30), dpToPx(30)).apply {
+                    setMargins(dpToPx(4), dpToPx(2), dpToPx(4), dpToPx(2))
+                }
+                setOnClickListener {
+                    selectedColor = c
+                    updateSwatchBorders()
+                    onColorSelected(c)
+                }
             }
-            val reopenId = 20 + i
-            nodes.put(org.json.JSONObject().apply {
-                put("id", drawId); put("type", "CLICK"); put("x", start.first); put("y", start.second)
-                put("isSwipe", true); put("swipeEndX", end.first); put("swipeEndY", end.second)
-                put("swipeDurationMs", 1100); put("delayAfterMs", 220)
-                put("crosshairColor", colorInt); put("swipePathPoints", pathArr)
-                if (i > 0) put("skipSequentialExecution", true)
-                put("nextNodeIdOnSuccess", if (i < swatches.lastIndex) reopenId else -1)
-            })
-            if (i < swatches.lastIndex) {
-                val nextSwId = swatches[i + 1].first.first
-                nodes.put(org.json.JSONObject().apply {
-                    put("id", reopenId); put("type", "CLICK"); put("x", 320); put("y", 2670)
-                    put("clickDurationMs", 45); put("delayAfterMs", 280); put("crosshairColor", -65536)
-                    put("skipSequentialExecution", true); put("nextNodeIdOnSuccess", nextSwId)
-                })
-            }
+            swatchButtons.add(c to btn)
+            colorsLayout.addView(btn)
         }
-        obj.put("nodes", nodes)
-        return obj.toString()
-    }
-
-    private fun buildComplexSwipesPresetJson(): String {
-        val obj = org.json.JSONObject()
-        obj.put("screenWidth", 1080)
-        obj.put("screenHeight", 2400)
-        val nodes = org.json.JSONArray()
-        // 1. Infinity Figure-8 curved swipe
-        val fig8Pts = org.json.JSONArray()
-        for (k in 1..35) {
-            val t = 2.0 * Math.PI * k / 36.0
-            val px = (540 + 300 * Math.sin(t)).toInt()
-            val py = (750 + 160 * Math.sin(2 * t)).toInt()
-            fig8Pts.put(org.json.JSONObject().apply { put("x", px); put("y", py) })
-        }
-        nodes.put(org.json.JSONObject().apply {
-            put("id", 1); put("type", "CLICK"); put("x", 540); put("y", 750)
-            put("isSwipe", true); put("swipeEndX", 540); put("swipeEndY", 750)
-            put("swipeDurationMs", 950); put("delayAfterMs", 300)
-            put("crosshairColor", -16711681); put("swipePathPoints", fig8Pts)
-        })
-        // 2. Archimedes Spiral swipe
-        val spiralPts = org.json.JSONArray()
-        for (k in 1..40) {
-            val angle = 0.35 * k
-            val r = 6.0 * k
-            val px = (540 + r * Math.cos(angle)).toInt()
-            val py = (1350 + r * Math.sin(angle)).toInt()
-            spiralPts.put(org.json.JSONObject().apply { put("x", px); put("y", py) })
-        }
-        nodes.put(org.json.JSONObject().apply {
-            put("id", 2); put("type", "CLICK"); put("x", 540); put("y", 1350)
-            put("isSwipe", true); put("swipeEndX", 780); put("swipeEndY", 1350)
-            put("swipeDurationMs", 1200); put("delayAfterMs", 300)
-            put("crosshairColor", -65281); put("swipePathPoints", spiralPts)
-        })
-        // 3. Zig-zag lightning swipe
-        val zigPts = org.json.JSONArray().apply {
-            put(org.json.JSONObject().apply { put("x", 820); put("y", 1780) })
-            put(org.json.JSONObject().apply { put("x", 260); put("y", 1880) })
-            put(org.json.JSONObject().apply { put("x", 820); put("y", 1980) })
-            put(org.json.JSONObject().apply { put("x", 260); put("y", 2080) })
-        }
-        nodes.put(org.json.JSONObject().apply {
-            put("id", 3); put("type", "CLICK"); put("x", 260); put("y", 1680)
-            put("isSwipe", true); put("swipeEndX", 820); put("swipeEndY", 2180)
-            put("swipeDurationMs", 650); put("delayAfterMs", 400)
-            put("crosshairColor", -256); put("swipePathPoints", zigPts)
-        })
-        obj.put("nodes", nodes)
-        return obj.toString()
-    }
-
-    private fun buildSmartFarmPresetJson(): String {
-        val obj = org.json.JSONObject()
-        obj.put("screenWidth", 1080)
-        obj.put("screenHeight", 2400)
-        val nodes = org.json.JSONArray()
-        // 1. Manager router
-        nodes.put(org.json.JSONObject().apply {
-            put("id", 1); put("type", "MANAGER"); put("x", 540); put("y", 360)
-            put("delayAfterMs", 250); put("crosshairColor", -256)
-            put("managerRoutes", org.json.JSONArray().apply {
-                put(org.json.JSONObject().apply { put("checkNodeId", 2); put("onSuccessGoToId", 4) })
-                put(org.json.JSONObject().apply { put("checkNodeId", 3); put("onSuccessGoToId", 5) })
-            })
-            put("nextNodeIdOnFail", 6)
-        })
-        // 2. Smart OCR check (>= 1.5k)
-        nodes.put(org.json.JSONObject().apply {
-            put("id", 2); put("type", "CHECK_COLOR"); put("x", 540); put("y", 720)
-            put("triggerMode", 2); put("isSmartOcr", true); put("ocrOperator", ">="); put("ocrTargetValue", 1500.0)
-            put("textZoneStartX", 360); put("textZoneStartY", 660); put("textZoneEndX", 720); put("textZoneEndY", 780)
-            put("skipSequentialExecution", true); put("crosshairColor", -16711681)
-        })
-        // 3. Green button pixel color check
-        nodes.put(org.json.JSONObject().apply {
-            put("id", 3); put("type", "CHECK_COLOR"); put("x", 540); put("y", 1100)
-            put("triggerMode", 0); put("targetColor", -16725933); put("colorTolerance", 25)
-            put("skipSequentialExecution", true); put("crosshairColor", -16711936)
-        })
-        // 4. Buy / Collect tap (on OCR match)
-        nodes.put(org.json.JSONObject().apply {
-            put("id", 4); put("type", "CLICK"); put("x", 540); put("y", 900)
-            put("clickDurationMs", 40); put("delayAfterMs", 350); put("randomizeRadius", 8)
-            put("skipSequentialExecution", true); put("nextNodeIdOnSuccess", 1); put("crosshairColor", -16711681)
-        })
-        // 5. Claim reward tap (on color match)
-        nodes.put(org.json.JSONObject().apply {
-            put("id", 5); put("type", "CLICK"); put("x", 540); put("y", 1100)
-            put("clickDurationMs", 45); put("delayAfterMs", 400); put("randomizeRadius", 10)
-            put("skipSequentialExecution", true); put("nextNodeIdOnSuccess", 1); put("crosshairColor", -16711936)
-        })
-        // 6. Fallback scroll swipe when nothing matched
-        nodes.put(org.json.JSONObject().apply {
-            put("id", 6); put("type", "CLICK"); put("x", 540); put("y", 1650)
-            put("isSwipe", true); put("swipeEndX", 540); put("swipeEndY", 950)
-            put("swipeDurationMs", 450); put("delayAfterMs", 500)
-            put("skipSequentialExecution", true); put("nextNodeIdOnSuccess", 1); put("crosshairColor", -26368)
-        })
-        obj.put("nodes", nodes)
-        return obj.toString()
-    }
-
-    private fun buildMultitouchComboPresetJson(): String {
-        val obj = org.json.JSONObject()
-        obj.put("screenWidth", 1080)
-        obj.put("screenHeight", 2400)
-        val nodes = org.json.JSONArray()
-        // 1. Hold left trigger synced with right attack
-        nodes.put(org.json.JSONObject().apply {
-            put("id", 1); put("type", "CLICK"); put("x", 260); put("y", 1700)
-            put("isHold", true); put("holdDurationMs", 800); put("syncWithNodeIds", "2")
-            put("delayAfterMs", 150); put("crosshairColor", -16711936)
-        })
-        // 2. Synced right tap
-        nodes.put(org.json.JSONObject().apply {
-            put("id", 2); put("type", "CLICK"); put("x", 820); put("y", 1700)
-            put("clickDurationMs", 60); put("delayAfterMs", 100); put("randomizeRadius", 12)
-            put("crosshairColor", -65536)
-        })
-        // 3. Burst combo tap (5x with anti-detect)
-        nodes.put(org.json.JSONObject().apply {
-            put("id", 3); put("type", "CLICK"); put("x", 820); put("y", 1450)
-            put("repetitions", 5); put("clickDurationMs", 25); put("delayAfterMs", 65)
-            put("randomizeDelayMs", 25); put("randomizeRadius", 15); put("crosshairColor", -26368)
-        })
-        // 4. Dodge diagonal swipe
-        nodes.put(org.json.JSONObject().apply {
-            put("id", 4); put("type", "CLICK"); put("x", 320); put("y", 1450)
-            put("isSwipe", true); put("swipeEndX", 680); put("swipeEndY", 1180)
-            put("swipeDurationMs", 220); put("delayAfterMs", 300); put("crosshairColor", -16711681)
-        })
-        obj.put("nodes", nodes)
-        return obj.toString()
+        updateSwatchBorders()
+        scroll.addView(colorsLayout)
+        layout.addView(scroll)
+        return layout
     }
 
     private fun createThemedSpinnerAdapter(items: Array<String>): android.widget.ArrayAdapter<String> {
@@ -4700,6 +4571,108 @@ class UIManager(private val service: AutoClickService) {
             body.addView(applyAntiDetectBtn)
         }
 
+        val defaultCrosshairColor = if (node.type == NodeType.CLICK) Color.RED else if (node.type == NodeType.MANAGER) Color.parseColor("#9C27B0") else Color.BLUE
+        val defaultNumberColor = if (node.type == NodeType.CLICK) Color.WHITE else Color.YELLOW
+        val hasAppearanceChanges = node.sizeScale != 1.0f || node.crosshairColor != defaultCrosshairColor || node.numberColor != defaultNumberColor
+        addSection(
+            "🎨 6. Внешний вид метки (Цвет и размер)",
+            hasAppearanceChanges,
+            startExpanded = true
+        ) { body ->
+            val sizeHeaderRow = LinearLayout(service).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, dpToPx(2), 0, dpToPx(4))
+            }
+            val sizeLabelTv = TextView(service).apply {
+                text = "Размер метки: ${(node.sizeScale * 100).toInt()}%"
+                setTextColor(Color.WHITE)
+                setScaledTextSize(12.5f)
+                layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f)
+            }
+            lateinit var sizeSeekBar: android.widget.SeekBar
+            fun applyNodeScale(newScale: Float) {
+                val clamped = (Math.round(newScale * 10f) / 10f).coerceIn(0.5f, 2.5f)
+                node.sizeScale = clamped
+                sizeLabelTv.text = "Размер метки: ${(clamped * 100).toInt()}%"
+                sizeSeekBar.progress = ((clamped - 0.5f) * 10f).toInt().coerceIn(0, 20)
+                nodeViews[node.id]?.invalidate()
+                swipeEndViews[node.id]?.invalidate()
+                colorCompareViews[node.id]?.invalidate()
+                invalidateLines()
+            }
+            sizeHeaderRow.addView(sizeLabelTv)
+            sizeHeaderRow.addView(Button(service).apply {
+                text = "−"
+                stylePillButton(this, "#283246", null, 8, 14f)
+                setPadding(0, 0, 0, 0)
+                layoutParams = LinearLayout.LayoutParams(dpToPx(34), dpToPx(30)).apply { setMargins(0, 0, dpToPx(4), 0) }
+                setOnClickListener { applyNodeScale(node.sizeScale - 0.1f) }
+            })
+            sizeHeaderRow.addView(Button(service).apply {
+                text = "+"
+                stylePillButton(this, "#283246", null, 8, 14f)
+                setPadding(0, 0, 0, 0)
+                layoutParams = LinearLayout.LayoutParams(dpToPx(34), dpToPx(30))
+                setOnClickListener { applyNodeScale(node.sizeScale + 0.1f) }
+            })
+            body.addView(sizeHeaderRow)
+
+            sizeSeekBar = android.widget.SeekBar(service).apply {
+                max = 20 // 0.5x .. 2.5x (step 0.1)
+                progress = ((node.sizeScale - 0.5f) * 10f).toInt().coerceIn(0, 20)
+                setPadding(dpToPx(8), dpToPx(4), dpToPx(8), dpToPx(8))
+                setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
+                    override fun onProgressChanged(seekBar: android.widget.SeekBar?, p: Int, fromUser: Boolean) {
+                        if (fromUser) {
+                            val sc = 0.5f + p * 0.1f
+                            node.sizeScale = sc
+                            sizeLabelTv.text = "Размер метки: ${(sc * 100).toInt()}%"
+                            nodeViews[node.id]?.invalidate()
+                            swipeEndViews[node.id]?.invalidate()
+                            colorCompareViews[node.id]?.invalidate()
+                            invalidateLines()
+                        }
+                    }
+                    override fun onStartTrackingTouch(seekBar: android.widget.SeekBar?) {}
+                    override fun onStopTrackingTouch(seekBar: android.widget.SeekBar?) {}
+                })
+            }
+            body.addView(sizeSeekBar)
+
+            body.addView(createColorRow("Цвет прицела:", node.crosshairColor) { c ->
+                node.crosshairColor = c
+                nodeViews[node.id]?.invalidate()
+                invalidateLines()
+            })
+
+            body.addView(createColorRow("Цвет номера метки:", node.numberColor) { c ->
+                node.numberColor = c
+                nodeViews[node.id]?.invalidate()
+            })
+
+            body.addView(Button(service).apply {
+                text = "🎨 Применить этот размер и цвета ко всем меткам"
+                stylePillButton(this, "#263238", "#3E506B", 8, 11.5f)
+                layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, dpToPx(34)).apply {
+                    setMargins(0, dpToPx(6), 0, 0)
+                }
+                setOnClickListener {
+                    service.nodes.forEach { other ->
+                        other.sizeScale = node.sizeScale
+                        other.crosshairColor = node.crosshairColor
+                        other.numberColor = node.numberColor
+                        nodeViews[other.id]?.invalidate()
+                        swipeEndViews[other.id]?.invalidate()
+                        colorCompareViews[other.id]?.invalidate()
+                    }
+                    invalidateLines()
+                    service.autoSave()
+                    Toast.makeText(service, "Внешний вид применён ко всем меткам (${service.nodes.size})", Toast.LENGTH_SHORT).show()
+                }
+            })
+        }
+
         if (appMode != AppMode.ADVANCED) {
             successLayout.visibility = View.GONE
             failLayout.visibility = View.GONE
@@ -5541,12 +5514,10 @@ class UIManager(private val service: AutoClickService) {
     }
 
     fun addNode(type: NodeType, startX: Int? = null, startY: Int? = null) {
-        if (false) {
-            android.widget.Toast.makeText(service, "В Одиночном режиме доступна только одна метка!", android.widget.Toast.LENGTH_SHORT).show()
-            return
-        }
         val id = nodeCounter++
+        val existingScale = service.nodes.firstOrNull()?.sizeScale ?: 1.0f
         val node = TargetNode(id = id, type = type).apply {
+            sizeScale = existingScale
             crosshairColor = if (type == NodeType.CLICK) Color.RED else if (type == NodeType.MANAGER) Color.parseColor("#9C27B0") else Color.BLUE
             numberColor = if (type == NodeType.CLICK) Color.WHITE else Color.YELLOW
         }
