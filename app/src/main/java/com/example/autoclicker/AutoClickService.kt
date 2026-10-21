@@ -206,10 +206,6 @@ class AutoClickService : AccessibilityService() {
         return results
     }
 
-    private fun parseNumericValue(text: String, suffixes: String): Double? {
-        return parseAllNumericValues(text, suffixes).firstOrNull()
-    }
-
     private fun evaluateSmartOcrCondition(value: Double, operator: String, compareValue: Double): Boolean {
         return when (operator) {
             ">" -> value > compareValue
