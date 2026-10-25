@@ -4265,6 +4265,37 @@ class UIManager(private val service: AutoClickService) {
         resolutionScaleLayout.addView(resolutionScaleText)
         resolutionScaleLayout.addView(resolutionScaleBar)
 
+        fun createCheckerboardDrawable(cellPx: Int = dpToPx(8)): android.graphics.drawable.Drawable {
+            return object : android.graphics.drawable.Drawable() {
+                private val lightPaint = Paint().apply { color = Color.parseColor("#2E3A48"); style = Paint.Style.FILL }
+                private val darkPaint = Paint().apply { color = Color.parseColor("#1B222C"); style = Paint.Style.FILL }
+                override fun draw(canvas: Canvas) {
+                    val b = bounds
+                    val step = cellPx.coerceAtLeast(4)
+                    var y = b.top
+                    var row = 0
+                    while (y < b.bottom) {
+                        var x = b.left
+                        var col = 0
+                        val nextY = minOf(y + step, b.bottom)
+                        while (x < b.right) {
+                            val nextX = minOf(x + step, b.right)
+                            val p = if ((row + col) % 2 == 0) lightPaint else darkPaint
+                            canvas.drawRect(x.toFloat(), y.toFloat(), nextX.toFloat(), nextY.toFloat(), p)
+                            x += step
+                            col++
+                        }
+                        y += step
+                        row++
+                    }
+                }
+                override fun setAlpha(alpha: Int) {}
+                override fun setColorFilter(colorFilter: android.graphics.ColorFilter?) {}
+                @Deprecated("Deprecated in Java")
+                override fun getOpacity(): Int = PixelFormat.OPAQUE
+            }
+        }
+
         val imgPreview = android.widget.ImageView(service).apply {
             layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, dpToPx(130)).apply { 
                 gravity = Gravity.CENTER_HORIZONTAL 
@@ -4292,7 +4323,7 @@ class UIManager(private val service: AutoClickService) {
                         }
                     }
                     imgPreview.setImageBitmap(bitmap)
-                    imgPreview.setBackgroundColor(Color.TRANSPARENT)
+                    imgPreview.background = createCheckerboardDrawable(dpToPx(7))
                 } catch(e: Exception) {}
             } else {
                 imgPreview.setBackgroundColor(Color.parseColor("#263238"))
@@ -4566,6 +4597,976 @@ class UIManager(private val service: AutoClickService) {
             }
         }
 
+        val spriteLibraryBtnRow = LinearLayout(service).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(0, 0, 0, dpToPx(4))
+            }
+        }
+
+        val saveSpritePanel = LinearLayout(service).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dpToPx(10), dpToPx(8), dpToPx(10), dpToPx(8))
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.parseColor("#1D2432"))
+                cornerRadius = dpToPx(8).toFloat()
+                setStroke(dpToPx(1), Color.parseColor("#FFB300"))
+            }
+            layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(0, 0, 0, dpToPx(6))
+            }
+            visibility = View.GONE
+        }
+
+        val spriteLibraryListPanel = LinearLayout(service).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dpToPx(8), dpToPx(8), dpToPx(8), dpToPx(8))
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.parseColor("#18202C"))
+                cornerRadius = dpToPx(8).toFloat()
+                setStroke(dpToPx(1), Color.parseColor("#00ACC1"))
+            }
+            layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(0, 0, 0, dpToPx(6))
+            }
+            visibility = View.GONE
+        }
+
+        lateinit var insertSavedSpriteBtnRef: Button
+        lateinit var refreshSpriteLibraryList: () -> Unit
+
+        val saveSpriteNameEdit = EditText(service).apply {
+            inputType = InputType.TYPE_CLASS_TEXT
+            hint = "Название спрайта (например: Кнопка Бой)"
+            setHintTextColor(Color.parseColor("#78909C"))
+            setTextColor(Color.WHITE)
+            setScaledTextSize(12.5f)
+            layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT)
+        }
+        saveSpritePanel.addView(TextView(service).apply {
+            text = "💾 Сохранение текущего образца в кэш спрайтов:"
+            setTextColor(Color.parseColor("#FFD54F"))
+            setTypeface(null, Typeface.BOLD)
+            setScaledTextSize(11.5f)
+        })
+        saveSpritePanel.addView(saveSpriteNameEdit)
+
+        val saveSpriteActionRow = LinearLayout(service).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dpToPx(4), 0, 0)
+        }
+        saveSpriteActionRow.addView(Button(service).apply {
+            text = "✓ Сохранить в кэш"
+            stylePillButton(this, "#2E7D32", null, 8, 12f)
+            layoutParams = LinearLayout.LayoutParams(0, dpToPx(34), 1f).apply {
+                setMargins(0, 0, dpToPx(4), 0)
+            }
+            setOnClickListener {
+                val b64 = node.targetImageBase64
+                if (b64.isNullOrEmpty()) {
+                    Toast.makeText(service, "Сначала захватите или загрузите картинку!", Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                var w = 0
+                var h = 0
+                try {
+                    val bytes = android.util.Base64.decode(b64, android.util.Base64.DEFAULT)
+                    val bmp = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                    if (bmp != null) {
+                        w = bmp.width
+                        h = bmp.height
+                        bmp.recycle()
+                    }
+                } catch (_: Exception) {}
+                val defaultName = "Спрайт #${service.getSavedSprites().size + 1} (${w}x${h})"
+                val chosenName = saveSpriteNameEdit.text.toString().trim().ifEmpty { defaultName }
+                service.saveSpriteToLibrary(chosenName, b64, w, h)
+                saveSpritePanel.visibility = View.GONE
+                val count = service.getSavedSprites().size
+                insertSavedSpriteBtnRef.text = "📦 Вставить спрайт ($count)"
+                if (spriteLibraryListPanel.visibility == View.VISIBLE) {
+                    refreshSpriteLibraryList()
+                }
+                Toast.makeText(service, "Спрайт '$chosenName' сохранён в кэш!", Toast.LENGTH_SHORT).show()
+            }
+        })
+        saveSpriteActionRow.addView(Button(service).apply {
+            text = "Отмена"
+            stylePillButton(this, "#37474F", null, 8, 12f)
+            layoutParams = LinearLayout.LayoutParams(dpToPx(85), dpToPx(34))
+            setOnClickListener {
+                saveSpritePanel.visibility = View.GONE
+            }
+        })
+        saveSpritePanel.addView(saveSpriteActionRow)
+
+        refreshSpriteLibraryList = {
+            spriteLibraryListPanel.removeAllViews()
+            val sprites = service.getSavedSprites()
+            insertSavedSpriteBtnRef.text = "📦 Вставить спрайт (${sprites.size})"
+
+            val headerRow = LinearLayout(service).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, 0, 0, dpToPx(6))
+            }
+            headerRow.addView(TextView(service).apply {
+                text = "📦 Сохранённые спрайты (${sprites.size}):"
+                setTextColor(Color.parseColor("#80DEEA"))
+                setTypeface(null, Typeface.BOLD)
+                setScaledTextSize(12f)
+                layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f)
+            })
+            headerRow.addView(Button(service).apply {
+                text = "✕"
+                stylePillButton(this, "#37474F", null, 6, 11f)
+                setPadding(0, 0, 0, 0)
+                layoutParams = LinearLayout.LayoutParams(dpToPx(28), dpToPx(26))
+                setOnClickListener {
+                    spriteLibraryListPanel.visibility = View.GONE
+                }
+            })
+            spriteLibraryListPanel.addView(headerRow)
+
+            if (sprites.isEmpty()) {
+                spriteLibraryListPanel.addView(TextView(service).apply {
+                    text = "Кэш спрайтов пуст.\nСначала захватите образец на экран или загрузите из галереи, затем нажмите «💾 Сохранить как спрайт»."
+                    setTextColor(Color.parseColor("#90A4AE"))
+                    setScaledTextSize(11.5f)
+                    setPadding(dpToPx(4), dpToPx(4), dpToPx(4), dpToPx(4))
+                })
+            } else {
+                sprites.forEach { sp ->
+                    val itemRow = LinearLayout(service).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.CENTER_VERTICAL
+                        setPadding(dpToPx(6), dpToPx(5), dpToPx(6), dpToPx(5))
+                        background = android.graphics.drawable.GradientDrawable().apply {
+                            setColor(Color.parseColor("#243040"))
+                            cornerRadius = dpToPx(6).toFloat()
+                        }
+                        layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT).apply {
+                            setMargins(0, 0, 0, dpToPx(4))
+                        }
+                    }
+
+                    val thumbView = android.widget.ImageView(service).apply {
+                        layoutParams = LinearLayout.LayoutParams(dpToPx(42), dpToPx(42)).apply {
+                            setMargins(0, 0, dpToPx(8), 0)
+                        }
+                        scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
+                        setBackgroundColor(Color.parseColor("#121820"))
+                        setPadding(dpToPx(2), dpToPx(2), dpToPx(2), dpToPx(2))
+                        try {
+                            val bytes = android.util.Base64.decode(sp.base64, android.util.Base64.DEFAULT)
+                            val bmp = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                            setImageBitmap(bmp)
+                        } catch (_: Exception) {}
+                    }
+                    itemRow.addView(thumbView)
+
+                    val infoCol = LinearLayout(service).apply {
+                        orientation = LinearLayout.VERTICAL
+                        layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f)
+                    }
+                    infoCol.addView(TextView(service).apply {
+                        text = sp.name
+                        setTextColor(Color.WHITE)
+                        setTypeface(null, Typeface.BOLD)
+                        setScaledTextSize(12f)
+                    })
+                    infoCol.addView(TextView(service).apply {
+                        text = if (sp.width > 0 && sp.height > 0) "${sp.width}×${sp.height} px" else "Спрайт"
+                        setTextColor(Color.parseColor("#90A4AE"))
+                        setScaledTextSize(10.5f)
+                    })
+                    itemRow.addView(infoCol)
+
+                    itemRow.addView(Button(service).apply {
+                        text = "Вставить"
+                        stylePillButton(this, "#00838F", null, 6, 11.5f)
+                        setPadding(dpToPx(8), 0, dpToPx(8), 0)
+                        layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.WRAP_CONTENT, dpToPx(32)).apply {
+                            setMargins(dpToPx(4), 0, dpToPx(4), 0)
+                        }
+                        setOnClickListener {
+                            node.invalidateImageCache()
+                            node.targetImageBase64 = sp.base64
+                            updatePreviewImage()
+                            service.autoSave()
+                            spriteLibraryListPanel.visibility = View.GONE
+                            Toast.makeText(service, "Вставлен спрайт: ${sp.name}", Toast.LENGTH_SHORT).show()
+                        }
+                    })
+
+                    itemRow.addView(Button(service).apply {
+                        text = "🗑"
+                        stylePillButton(this, "#4E2A2A", null, 6, 11.5f)
+                        setPadding(0, 0, 0, 0)
+                        layoutParams = LinearLayout.LayoutParams(dpToPx(32), dpToPx(32))
+                        setOnClickListener {
+                            service.deleteSpriteFromLibrary(sp.name)
+                            refreshSpriteLibraryList()
+                            Toast.makeText(service, "Спрайт '${sp.name}' удалён из кэша", Toast.LENGTH_SHORT).show()
+                        }
+                    })
+
+                    spriteLibraryListPanel.addView(itemRow)
+                }
+            }
+        }
+
+        val saveAsSpriteBtn = Button(service).apply {
+            text = "💾 Сохранить как спрайт"
+            stylePillButton(this, "#5D4037", "#FFB300", 8, 11.5f)
+            layoutParams = LinearLayout.LayoutParams(0, dpToPx(36), 1f).apply {
+                setMargins(0, 0, dpToPx(4), 0)
+            }
+            setOnClickListener {
+                val b64 = node.targetImageBase64
+                if (b64.isNullOrEmpty()) {
+                    Toast.makeText(service, "Сначала захватите образец с экрана или загрузите картинку!", Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                if (saveSpritePanel.visibility == View.VISIBLE) {
+                    saveSpritePanel.visibility = View.GONE
+                } else {
+                    var w = 0
+                    var h = 0
+                    try {
+                        val bytes = android.util.Base64.decode(b64, android.util.Base64.DEFAULT)
+                        val bmp = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                        if (bmp != null) {
+                            w = bmp.width
+                            h = bmp.height
+                            bmp.recycle()
+                        }
+                    } catch (_: Exception) {}
+                    val nextNum = service.getSavedSprites().size + 1
+                    saveSpriteNameEdit.setText("Спрайт #$nextNum (${w}x${h})")
+                    saveSpriteNameEdit.setSelection(saveSpriteNameEdit.text.length)
+                    spriteLibraryListPanel.visibility = View.GONE
+                    saveSpritePanel.visibility = View.VISIBLE
+                }
+            }
+        }
+
+        val insertSavedSpriteBtn = Button(service).apply {
+            val initialCount = service.getSavedSprites().size
+            text = "📦 Вставить спрайт ($initialCount)"
+            stylePillButton(this, "#006064", "#00ACC1", 8, 11.5f)
+            layoutParams = LinearLayout.LayoutParams(0, dpToPx(36), 1f).apply {
+                setMargins(dpToPx(4), 0, 0, 0)
+            }
+            setOnClickListener {
+                if (spriteLibraryListPanel.visibility == View.VISIBLE) {
+                    spriteLibraryListPanel.visibility = View.GONE
+                } else {
+                    saveSpritePanel.visibility = View.GONE
+                    refreshSpriteLibraryList()
+                    spriteLibraryListPanel.visibility = View.VISIBLE
+                }
+            }
+        }
+        insertSavedSpriteBtnRef = insertSavedSpriteBtn
+
+        spriteLibraryBtnRow.addView(saveAsSpriteBtn)
+        spriteLibraryBtnRow.addView(insertSavedSpriteBtn)
+
+        val spriteEditorPanel = LinearLayout(service).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dpToPx(8), dpToPx(8), dpToPx(8), dpToPx(8))
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.parseColor("#161F2C"))
+                cornerRadius = dpToPx(8).toFloat()
+                setStroke(dpToPx(1), Color.parseColor("#AB47BC"))
+            }
+            layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(0, 0, 0, dpToPx(6))
+            }
+            visibility = View.GONE
+        }
+
+        var editW = 0
+        var editH = 0
+        var editPixels = IntArray(0)
+        var origW = 0
+        var origH = 0
+        var origPixels = IntArray(0)
+        data class EditorSnapshot(val w: Int, val h: Int, val pixels: IntArray, val oW: Int, val oH: Int, val oPixels: IntArray)
+        val undoStack = ArrayDeque<EditorSnapshot>()
+        var editorToolMode = 0 // 0 = Magic Wand (Фон по касанию), 1 = Eraser (Ластик), 2 = Restore (Восстановить)
+        var bgTolerance = 28
+        var wandConnectedOnly = true
+        var brushRadius = 1 // 0 -> 1px, 1 -> 2px, 2 -> 4px, 3 -> 6px
+
+        fun pushUndoSnapshot() {
+            if (editW <= 0 || editH <= 0 || editPixels.isEmpty()) return
+            if (undoStack.size >= 15) undoStack.removeFirst()
+            undoStack.addLast(
+                EditorSnapshot(
+                    editW,
+                    editH,
+                    editPixels.clone(),
+                    origW,
+                    origH,
+                    origPixels.clone()
+                )
+            )
+        }
+
+        val editorHeaderRow = LinearLayout(service).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, 0, dpToPx(4))
+        }
+        val editorTitleTv = TextView(service).apply {
+            text = "✂️ Редактор спрайта (удаление фона)"
+            setTextColor(Color.parseColor("#E1BEE7"))
+            setTypeface(null, Typeface.BOLD)
+            setScaledTextSize(12f)
+            layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val editorCloseBtn = Button(service).apply {
+            text = "✕"
+            stylePillButton(this, "#37474F", null, 6, 11f)
+            setPadding(0, 0, 0, 0)
+            layoutParams = LinearLayout.LayoutParams(dpToPx(28), dpToPx(26))
+            setOnClickListener {
+                spriteEditorPanel.visibility = View.GONE
+            }
+        }
+        editorHeaderRow.addView(editorTitleTv)
+        editorHeaderRow.addView(editorCloseBtn)
+        spriteEditorPanel.addView(editorHeaderRow)
+
+        val editorStatsTv = TextView(service).apply {
+            text = "Коснитесь фона на картинке, чтобы сделать его прозрачным (игнорируется при поиске)"
+            setTextColor(Color.parseColor("#B0BEC5"))
+            setScaledTextSize(11f)
+            setPadding(0, 0, 0, dpToPx(6))
+        }
+        spriteEditorPanel.addView(editorStatsTv)
+
+        lateinit var spriteCanvasView: View
+        lateinit var undoEditorBtn: Button
+
+        fun updateEditorStats() {
+            if (editW <= 0 || editH <= 0 || editPixels.isEmpty()) return
+            var opaqueCount = 0
+            for (px in editPixels) {
+                if ((px ushr 24) >= 128) opaqueCount++
+            }
+            val total = editW * editH
+            val activePct = ((opaqueCount * 100f) / total.coerceAtLeast(1)).toInt()
+            val maskedPct = 100 - activePct
+            editorStatsTv.text = "Размер: ${editW}×${editH} px | Спрайт: $activePct% ($opaqueCount пикс.) | Удалено фона: $maskedPct%"
+            if (::undoEditorBtn.isInitialized) {
+                undoEditorBtn.text = "↩️ Назад (${undoStack.size})"
+            }
+        }
+
+        fun colorMatchesWithinTol(c1: Int, c2: Int, tol: Int): Boolean {
+            val r1 = (c1 shr 16) and 0xFF
+            val g1 = (c1 shr 8) and 0xFF
+            val b1 = c1 and 0xFF
+            val r2 = (c2 shr 16) and 0xFF
+            val g2 = (c2 shr 8) and 0xFF
+            val b2 = c2 and 0xFF
+            return Math.abs(r1 - r2) <= tol && Math.abs(g1 - g2) <= tol && Math.abs(b1 - b2) <= tol
+        }
+
+        fun eraseBackgroundAt(startX: Int, startY: Int) {
+            if (startX !in 0 until editW || startY !in 0 until editH) return
+            val seedColor = editPixels[startY * editW + startX]
+            if ((seedColor ushr 24) < 128) return
+            pushUndoSnapshot()
+
+            if (!wandConnectedOnly) {
+                for (i in editPixels.indices) {
+                    val c = editPixels[i]
+                    if ((c ushr 24) >= 128 && colorMatchesWithinTol(c, seedColor, bgTolerance)) {
+                        editPixels[i] = 0x00000000
+                    }
+                }
+            } else {
+                val visited = BooleanArray(editW * editH)
+                val queue = IntArray(editW * editH)
+                var head = 0
+                var tail = 0
+                val startIdx = startY * editW + startX
+                visited[startIdx] = true
+                queue[tail++] = startIdx
+
+                while (head < tail) {
+                    val idx = queue[head++]
+                    editPixels[idx] = 0x00000000
+                    val cx = idx % editW
+                    val cy = idx / editW
+                    for (dy in -1..1) {
+                        val ny = cy + dy
+                        if (ny !in 0 until editH) continue
+                        val rowOff = ny * editW
+                        for (dx in -1..1) {
+                            if (dx == 0 && dy == 0) continue
+                            val nx = cx + dx
+                            if (nx !in 0 until editW) continue
+                            val nIdx = rowOff + nx
+                            if (!visited[nIdx]) {
+                                val nc = editPixels[nIdx]
+                                if ((nc ushr 24) >= 128 && colorMatchesWithinTol(nc, seedColor, bgTolerance)) {
+                                    visited[nIdx] = true
+                                    queue[tail++] = nIdx
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            updateEditorStats()
+            spriteCanvasView.invalidate()
+        }
+
+        fun applyBrushAt(centerX: Int, centerY: Int, restore: Boolean) {
+            if (editW <= 0 || editH <= 0) return
+            val r = brushRadius
+            val minY = (centerY - r).coerceAtLeast(0)
+            val maxY = (centerY + r).coerceAtMost(editH - 1)
+            val minX = (centerX - r).coerceAtLeast(0)
+            val maxX = (centerX + r).coerceAtMost(editW - 1)
+            for (y in minY..maxY) {
+                val rowOff = y * editW
+                for (x in minX..maxX) {
+                    if ((x - centerX) * (x - centerX) + (y - centerY) * (y - centerY) <= r * r + 1) {
+                        val idx = rowOff + x
+                        if (restore) {
+                            if (origW == editW && origH == editH && idx in origPixels.indices) {
+                                editPixels[idx] = origPixels[idx]
+                            } else {
+                                editPixels[idx] = editPixels[idx] or (0xFF shl 24)
+                            }
+                        } else {
+                            editPixels[idx] = 0x00000000
+                        }
+                    }
+                }
+            }
+            updateEditorStats()
+            spriteCanvasView.invalidate()
+        }
+
+        spriteCanvasView = object : View(service) {
+            private val lightCellPaint = Paint().apply { color = Color.parseColor("#323F4F"); style = Paint.Style.FILL }
+            private val darkCellPaint = Paint().apply { color = Color.parseColor("#1D2530"); style = Paint.Style.FILL }
+            private val borderPaint = Paint().apply {
+                color = Color.parseColor("#CE93D8")
+                style = Paint.Style.STROKE
+                strokeWidth = dpToPx(1).toFloat()
+            }
+            private val bmpPaint = Paint().apply {
+                isFilterBitmap = false
+                isAntiAlias = false
+            }
+            private val dstRect = android.graphics.RectF()
+            private var strokeStarted = false
+
+            private fun computeDestRect(): android.graphics.RectF {
+                val pad = dpToPx(8).toFloat()
+                val availW = (width - pad * 2f).coerceAtLeast(1f)
+                val availH = (height - pad * 2f).coerceAtLeast(1f)
+                if (editW <= 0 || editH <= 0) {
+                    dstRect.set(pad, pad, pad + availW, pad + availH)
+                    return dstRect
+                }
+                val scale = minOf(availW / editW.toFloat(), availH / editH.toFloat())
+                val drawW = editW * scale
+                val drawH = editH * scale
+                val left = (width - drawW) / 2f
+                val top = (height - drawH) / 2f
+                dstRect.set(left, top, left + drawW, top + drawH)
+                return dstRect
+            }
+
+            override fun onDraw(canvas: Canvas) {
+                super.onDraw(canvas)
+                val rect = computeDestRect()
+                val cell = dpToPx(7).coerceAtLeast(4)
+                var y = rect.top.toInt()
+                var row = 0
+                val rightInt = rect.right.toInt()
+                val bottomInt = rect.bottom.toInt()
+                while (y < bottomInt) {
+                    var x = rect.left.toInt()
+                    var col = 0
+                    val nextY = minOf(y + cell, bottomInt)
+                    while (x < rightInt) {
+                        val nextX = minOf(x + cell, rightInt)
+                        val p = if ((row + col) % 2 == 0) lightCellPaint else darkCellPaint
+                        canvas.drawRect(x.toFloat(), y.toFloat(), nextX.toFloat(), nextY.toFloat(), p)
+                        x += cell
+                        col++
+                    }
+                    y += cell
+                    row++
+                }
+
+                if (editW > 0 && editH > 0 && editPixels.size == editW * editH) {
+                    val tempBmp = android.graphics.Bitmap.createBitmap(editPixels, editW, editH, android.graphics.Bitmap.Config.ARGB_8888)
+                    canvas.drawBitmap(tempBmp, null, rect, bmpPaint)
+                    tempBmp.recycle()
+                }
+                canvas.drawRect(rect, borderPaint)
+            }
+
+            override fun onTouchEvent(event: MotionEvent): Boolean {
+                if (editW <= 0 || editH <= 0 || editPixels.isEmpty()) return false
+                val rect = computeDestRect()
+                val tx = ((event.x - rect.left) / rect.width() * editW).toInt()
+                val ty = ((event.y - rect.top) / rect.height() * editH).toInt()
+
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        parent?.requestDisallowInterceptTouchEvent(true)
+                        if (tx in 0 until editW && ty in 0 until editH) {
+                            if (editorToolMode == 0) {
+                                eraseBackgroundAt(tx, ty)
+                            } else {
+                                pushUndoSnapshot()
+                                strokeStarted = true
+                                applyBrushAt(tx, ty, restore = (editorToolMode == 2))
+                            }
+                        }
+                        return true
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        parent?.requestDisallowInterceptTouchEvent(true)
+                        if (editorToolMode != 0) {
+                            val clampedX = tx.coerceIn(0, editW - 1)
+                            val clampedY = ty.coerceIn(0, editH - 1)
+                            if (!strokeStarted) {
+                                pushUndoSnapshot()
+                                strokeStarted = true
+                            }
+                            applyBrushAt(clampedX, clampedY, restore = (editorToolMode == 2))
+                        }
+                        return true
+                    }
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        strokeStarted = false
+                        parent?.requestDisallowInterceptTouchEvent(false)
+                        return true
+                    }
+                }
+                return super.onTouchEvent(event)
+            }
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, dpToPx(200)).apply {
+                setMargins(0, 0, 0, dpToPx(6))
+            }
+        }
+        spriteEditorPanel.addView(spriteCanvasView)
+
+        // Tool mode buttons row: Палочка (Фон) | Ластик | Восстановить
+        val toolModeRow = LinearLayout(service).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(0, 0, 0, dpToPx(6))
+            }
+        }
+        lateinit var wandToolBtn: Button
+        lateinit var eraserToolBtn: Button
+        lateinit var restoreToolBtn: Button
+        lateinit var wandSettingsContainer: LinearLayout
+        lateinit var brushSettingsContainer: LinearLayout
+
+        fun updateToolButtonsUI() {
+            stylePillButton(wandToolBtn, if (editorToolMode == 0) "#7B1FA2" else "#283246", if (editorToolMode == 0) "#E1BEE7" else null, 8, 11f)
+            stylePillButton(eraserToolBtn, if (editorToolMode == 1) "#C62828" else "#283246", if (editorToolMode == 1) "#FFCDD2" else null, 8, 11f)
+            stylePillButton(restoreToolBtn, if (editorToolMode == 2) "#2E7D32" else "#283246", if (editorToolMode == 2) "#A5D6A7" else null, 8, 11f)
+            wandSettingsContainer.visibility = if (editorToolMode == 0) View.VISIBLE else View.GONE
+            brushSettingsContainer.visibility = if (editorToolMode != 0) View.VISIBLE else View.GONE
+        }
+
+        wandToolBtn = Button(service).apply {
+            text = "🪄 Палочка (Фон)"
+            layoutParams = LinearLayout.LayoutParams(0, dpToPx(34), 1.15f).apply { setMargins(0, 0, dpToPx(3), 0) }
+            setPadding(dpToPx(4), 0, dpToPx(4), 0)
+            setOnClickListener {
+                editorToolMode = 0
+                updateToolButtonsUI()
+            }
+        }
+        eraserToolBtn = Button(service).apply {
+            text = "🧽 Ластик"
+            layoutParams = LinearLayout.LayoutParams(0, dpToPx(34), 0.9f).apply { setMargins(dpToPx(3), 0, dpToPx(3), 0) }
+            setPadding(dpToPx(4), 0, dpToPx(4), 0)
+            setOnClickListener {
+                editorToolMode = 1
+                updateToolButtonsUI()
+            }
+        }
+        restoreToolBtn = Button(service).apply {
+            text = "🖌 Вернуть"
+            layoutParams = LinearLayout.LayoutParams(0, dpToPx(34), 0.95f).apply { setMargins(dpToPx(3), 0, 0, 0) }
+            setPadding(dpToPx(4), 0, dpToPx(4), 0)
+            setOnClickListener {
+                editorToolMode = 2
+                updateToolButtonsUI()
+            }
+        }
+        toolModeRow.addView(wandToolBtn)
+        toolModeRow.addView(eraserToolBtn)
+        toolModeRow.addView(restoreToolBtn)
+        spriteEditorPanel.addView(toolModeRow)
+
+        wandSettingsContainer = LinearLayout(service).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dpToPx(4), 0, dpToPx(4), dpToPx(4))
+        }
+        val wandConnectedCheck = android.widget.CheckBox(service).apply {
+            text = "🔗 Только смежные пиксели (не трогать цвет внутри иконки)"
+            setTextColor(Color.parseColor("#CE93D8"))
+            setScaledTextSize(11.5f)
+            isChecked = wandConnectedOnly
+            setOnCheckedChangeListener { _, isChecked ->
+                wandConnectedOnly = isChecked
+            }
+        }
+        wandSettingsContainer.addView(wandConnectedCheck)
+
+        val tolRow = LinearLayout(service).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dpToPx(2), 0, dpToPx(2))
+        }
+        val tolLabelTv = TextView(service).apply {
+            text = "Допуск цвета фона ($bgTolerance):"
+            setTextColor(Color.WHITE)
+            setScaledTextSize(11.5f)
+        }
+        val tolBar = android.widget.SeekBar(service).apply {
+            max = 100
+            progress = bgTolerance
+            layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f)
+            setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(seekBar: android.widget.SeekBar?, progress: Int, fromUser: Boolean) {
+                    bgTolerance = progress.coerceAtLeast(1)
+                    tolLabelTv.text = "Допуск цвета фона ($bgTolerance):"
+                }
+                override fun onStartTrackingTouch(seekBar: android.widget.SeekBar?) {}
+                override fun onStopTrackingTouch(seekBar: android.widget.SeekBar?) {}
+            })
+        }
+        tolRow.addView(tolLabelTv)
+        tolRow.addView(tolBar)
+        wandSettingsContainer.addView(tolRow)
+        spriteEditorPanel.addView(wandSettingsContainer)
+
+        brushSettingsContainer = LinearLayout(service).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dpToPx(4), dpToPx(2), dpToPx(4), dpToPx(6))
+            visibility = View.GONE
+        }
+        val brushLabelTv = TextView(service).apply {
+            text = "Размер кисти (${brushRadius * 2 + 1} px):"
+            setTextColor(Color.WHITE)
+            setScaledTextSize(11.5f)
+        }
+        val brushSeekBar = android.widget.SeekBar(service).apply {
+            max = 6
+            progress = brushRadius
+            layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f)
+            setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(seekBar: android.widget.SeekBar?, progress: Int, fromUser: Boolean) {
+                    brushRadius = progress.coerceIn(0, 6)
+                    brushLabelTv.text = "Размер кисти (${brushRadius * 2 + 1} px):"
+                }
+                override fun onStartTrackingTouch(seekBar: android.widget.SeekBar?) {}
+                override fun onStopTrackingTouch(seekBar: android.widget.SeekBar?) {}
+            })
+        }
+        brushSettingsContainer.addView(brushLabelTv)
+        brushSettingsContainer.addView(brushSeekBar)
+        spriteEditorPanel.addView(brushSettingsContainer)
+
+        updateToolButtonsUI()
+
+        // Quick actions row: ⚡ Авто-фон с краёв | ✂️ Обрезать пустые края
+        val quickAutoRow = LinearLayout(service).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(0, 0, 0, dpToPx(6))
+            }
+        }
+        val autoBorderBgBtn = Button(service).apply {
+            text = "⚡ Авто-фон с краёв"
+            stylePillButton(this, "#4A148C", "#BA68C8", 8, 11.5f)
+            layoutParams = LinearLayout.LayoutParams(0, dpToPx(34), 1f).apply { setMargins(0, 0, dpToPx(4), 0) }
+            setOnClickListener {
+                if (editW <= 0 || editH <= 0 || editPixels.isEmpty()) return@setOnClickListener
+                pushUndoSnapshot()
+                val visited = BooleanArray(editW * editH)
+                val queue = IntArray(editW * editH)
+                val seedColors = IntArray(editW * editH)
+                var head = 0
+                var tail = 0
+
+                fun enqueueBorderPixel(x: Int, y: Int) {
+                    val idx = y * editW + x
+                    if (!visited[idx]) {
+                        val c = editPixels[idx]
+                        visited[idx] = true
+                        if ((c ushr 24) >= 128) {
+                            seedColors[tail] = c
+                            queue[tail] = idx
+                            tail++
+                        }
+                    }
+                }
+
+                for (x in 0 until editW) {
+                    enqueueBorderPixel(x, 0)
+                    enqueueBorderPixel(x, editH - 1)
+                }
+                for (y in 0 until editH) {
+                    enqueueBorderPixel(0, y)
+                    enqueueBorderPixel(editW - 1, y)
+                }
+
+                var removed = 0
+                while (head < tail) {
+                    val idx = queue[head]
+                    val refColor = seedColors[head]
+                    head++
+                    if ((editPixels[idx] ushr 24) >= 128) {
+                        editPixels[idx] = 0x00000000
+                        removed++
+                    }
+                    val cx = idx % editW
+                    val cy = idx / editW
+                    for (dy in -1..1) {
+                        val ny = cy + dy
+                        if (ny !in 0 until editH) continue
+                        val rowOff = ny * editW
+                        for (dx in -1..1) {
+                            if (dx == 0 && dy == 0) continue
+                            val nx = cx + dx
+                            if (nx !in 0 until editW) continue
+                            val nIdx = rowOff + nx
+                            if (!visited[nIdx]) {
+                                val nc = editPixels[nIdx]
+                                if ((nc ushr 24) >= 128 && colorMatchesWithinTol(nc, refColor, bgTolerance)) {
+                                    visited[nIdx] = true
+                                    seedColors[tail] = refColor
+                                    queue[tail] = nIdx
+                                    tail++
+                                }
+                            }
+                        }
+                    }
+                }
+                updateEditorStats()
+                spriteCanvasView.invalidate()
+                Toast.makeText(service, "Авто-очистка краёв: удалено $removed пикс. фона", Toast.LENGTH_SHORT).show()
+            }
+        }
+        val autoCropTransparentBtn = Button(service).apply {
+            text = "✂️ Обрезать края"
+            stylePillButton(this, "#00695C", "#4DB6AC", 8, 11.5f)
+            layoutParams = LinearLayout.LayoutParams(0, dpToPx(34), 1f).apply { setMargins(dpToPx(4), 0, 0, 0) }
+            setOnClickListener {
+                if (editW <= 0 || editH <= 0 || editPixels.isEmpty()) return@setOnClickListener
+                var minX = editW
+                var minY = editH
+                var maxX = -1
+                var maxY = -1
+                for (y in 0 until editH) {
+                    val rowOff = y * editW
+                    for (x in 0 until editW) {
+                        if ((editPixels[rowOff + x] ushr 24) >= 128) {
+                            if (x < minX) minX = x
+                            if (x > maxX) maxX = x
+                            if (y < minY) minY = y
+                            if (y > maxY) maxY = y
+                        }
+                    }
+                }
+                if (maxX < minX || maxY < minY) {
+                    Toast.makeText(service, "Все пиксели прозрачны — нечего обрезать!", Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                val newW = maxX - minX + 1
+                val newH = maxY - minY + 1
+                if (newW == editW && newH == editH) {
+                    Toast.makeText(service, "Пустых прозрачных краёв нет", Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                pushUndoSnapshot()
+                val cropped = IntArray(newW * newH)
+                val croppedOrig = IntArray(newW * newH)
+                for (y in 0 until newH) {
+                    val srcRow = (minY + y) * editW + minX
+                    val dstRow = y * newW
+                    System.arraycopy(editPixels, srcRow, cropped, dstRow, newW)
+                    if (origW == editW && origH == editH) {
+                        System.arraycopy(origPixels, srcRow, croppedOrig, dstRow, newW)
+                    } else {
+                        System.arraycopy(editPixels, srcRow, croppedOrig, dstRow, newW)
+                    }
+                }
+                editW = newW
+                editH = newH
+                editPixels = cropped
+                origW = newW
+                origH = newH
+                origPixels = croppedOrig
+                updateEditorStats()
+                spriteCanvasView.invalidate()
+                Toast.makeText(service, "Края обрезаны: новый размер ${editW}×${editH} px", Toast.LENGTH_SHORT).show()
+            }
+        }
+        quickAutoRow.addView(autoBorderBgBtn)
+        quickAutoRow.addView(autoCropTransparentBtn)
+        spriteEditorPanel.addView(quickAutoRow)
+
+        // History & Apply row: ↩️ Назад | 🔄 Сброс | ✓ Применить к метке
+        val editorBottomRow = LinearLayout(service).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT)
+        }
+        undoEditorBtn = Button(service).apply {
+            text = "↩️ Назад (0)"
+            stylePillButton(this, "#37474F", null, 8, 11f)
+            setPadding(dpToPx(4), 0, dpToPx(4), 0)
+            layoutParams = LinearLayout.LayoutParams(0, dpToPx(36), 0.85f).apply { setMargins(0, 0, dpToPx(3), 0) }
+            setOnClickListener {
+                if (undoStack.isEmpty()) {
+                    Toast.makeText(service, "Нет действий для отмены", Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                val snap = undoStack.removeLast()
+                editW = snap.w
+                editH = snap.h
+                editPixels = snap.pixels
+                origW = snap.oW
+                origH = snap.oH
+                origPixels = snap.oPixels
+                updateEditorStats()
+                spriteCanvasView.invalidate()
+            }
+        }
+        val resetEditorBtn = Button(service).apply {
+            text = "🔄 Сброс"
+            stylePillButton(this, "#455A64", null, 8, 11f)
+            setPadding(dpToPx(4), 0, dpToPx(4), 0)
+            layoutParams = LinearLayout.LayoutParams(0, dpToPx(36), 0.75f).apply { setMargins(dpToPx(3), 0, dpToPx(3), 0) }
+            setOnClickListener {
+                if (origPixels.isEmpty()) return@setOnClickListener
+                pushUndoSnapshot()
+                editW = origW
+                editH = origH
+                editPixels = origPixels.clone()
+                updateEditorStats()
+                spriteCanvasView.invalidate()
+                Toast.makeText(service, "Восстановлен исходный образец", Toast.LENGTH_SHORT).show()
+            }
+        }
+        val applyEditorBtn = Button(service).apply {
+            text = "✓ Применить к метке"
+            stylePillButton(this, "#2E7D32", "#81C784", 8, 11.5f)
+            setPadding(dpToPx(6), 0, dpToPx(6), 0)
+            layoutParams = LinearLayout.LayoutParams(0, dpToPx(36), 1.4f).apply { setMargins(dpToPx(3), 0, 0, 0) }
+            setOnClickListener {
+                if (editW <= 0 || editH <= 0 || editPixels.isEmpty()) return@setOnClickListener
+                var opaqueCount = 0
+                for (px in editPixels) {
+                    if ((px ushr 24) >= 128) opaqueCount++
+                }
+                if (opaqueCount == 0) {
+                    Toast.makeText(service, "Нельзя сохранить полностью пустой спрайт! Оставьте хотя бы часть иконки.", Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                try {
+                    val resultBmp = android.graphics.Bitmap.createBitmap(editPixels, editW, editH, android.graphics.Bitmap.Config.ARGB_8888)
+                    val out = java.io.ByteArrayOutputStream()
+                    resultBmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out)
+                    resultBmp.recycle()
+                    val newB64 = android.util.Base64.encodeToString(out.toByteArray(), android.util.Base64.DEFAULT)
+                    node.invalidateImageCache()
+                    node.targetImageBase64 = newB64
+                    updatePreviewImage()
+                    service.autoSave()
+                    spriteEditorPanel.visibility = View.GONE
+                    val activePct = ((opaqueCount * 100f) / (editW * editH).coerceAtLeast(1)).toInt()
+                    Toast.makeText(service, "Спрайт обновлён (${editW}×${editH}, активных пикселей: $activePct%)! Фон будет игнорироваться.", Toast.LENGTH_SHORT).show()
+                } catch (e: Exception) {
+                    Toast.makeText(service, "Ошибка сохранения спрайта", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+        editorBottomRow.addView(undoEditorBtn)
+        editorBottomRow.addView(resetEditorBtn)
+        editorBottomRow.addView(applyEditorBtn)
+        spriteEditorPanel.addView(editorBottomRow)
+
+        val openSpriteEditorBtn = Button(service).apply {
+            text = "✂️ Редактор спрайта (убрать фон / ластик)"
+            stylePillButton(this, "#4A148C", "#AB47BC", 8, 12f)
+            layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, dpToPx(36)).apply {
+                setMargins(0, 0, 0, dpToPx(4))
+            }
+            setOnClickListener {
+                val b64 = node.targetImageBase64
+                if (b64.isNullOrEmpty()) {
+                    Toast.makeText(service, "Сначала захватите образец с экрана или загрузите картинку!", Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                if (spriteEditorPanel.visibility == View.VISIBLE) {
+                    spriteEditorPanel.visibility = View.GONE
+                } else {
+                    try {
+                        val bytes = android.util.Base64.decode(b64, android.util.Base64.DEFAULT)
+                        val decoded = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                        if (decoded == null || decoded.width <= 0 || decoded.height <= 0) {
+                            Toast.makeText(service, "Не удалось загрузить картинку для редактора", Toast.LENGTH_SHORT).show()
+                            return@setOnClickListener
+                        }
+                        val argbBmp = if (decoded.config == android.graphics.Bitmap.Config.ARGB_8888) {
+                            decoded
+                        } else {
+                            val copy = decoded.copy(android.graphics.Bitmap.Config.ARGB_8888, false)
+                            decoded.recycle()
+                            copy
+                        }
+                        editW = argbBmp.width
+                        editH = argbBmp.height
+                        editPixels = IntArray(editW * editH)
+                        argbBmp.getPixels(editPixels, 0, editW, 0, 0, editW, editH)
+                        argbBmp.recycle()
+
+                        origW = editW
+                        origH = editH
+                        origPixels = editPixels.clone()
+                        undoStack.clear()
+                        updateEditorStats()
+
+                        saveSpritePanel.visibility = View.GONE
+                        spriteLibraryListPanel.visibility = View.GONE
+                        spriteEditorPanel.visibility = View.VISIBLE
+                        spriteCanvasView.invalidate()
+                    } catch (e: Exception) {
+                        Toast.makeText(service, "Ошибка открытия редактора спрайта", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+        }
+
         val testImgSearchBtn = Button(service).apply {
             text = "🎯 Тест поиска картинки / сравнения зон"
             stylePillButton(this, "#00695C", null, 8, 12f)
@@ -4828,6 +5829,11 @@ class UIManager(private val service: AutoClickService) {
                 body.addView(imgPreview)
                 body.addView(capImgBtn)
                 body.addView(importImgBtn)
+                body.addView(openSpriteEditorBtn)
+                body.addView(spriteEditorPanel)
+                body.addView(spriteLibraryBtnRow)
+                body.addView(saveSpritePanel)
+                body.addView(spriteLibraryListPanel)
                 body.addView(testImgSearchBtn)
             } else if (node.triggerMode == 2) { // Text Recognition
                 body.addView(colorOpLayout)

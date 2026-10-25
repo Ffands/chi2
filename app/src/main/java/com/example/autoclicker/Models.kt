@@ -32,6 +32,14 @@ data class ScaledTemplate(
     val pixels: IntArray
 )
 
+data class SavedSprite(
+    val name: String,
+    val base64: String,
+    val width: Int,
+    val height: Int,
+    val createdAt: Long = System.currentTimeMillis()
+)
+
 data class TargetNode(
     var id: Int,
     var type: NodeType = NodeType.CLICK,

@@ -2075,13 +2075,21 @@ class AutoClickService : AccessibilityService() {
             val densityStep = if (isSmallTemplate) 1 else Math.sqrt((tW * tH) / 650.0).toInt().coerceAtLeast(1)
             val checkStep = maxOf(baseStep, densityStep)
 
-            // Trim outer border (1px for >=6px, 2px for >=28px) so background bleed at template edges doesn't penalize matches
-            val marginX = when {
+            var hasTransparency = false
+            for (px in pTarget) {
+                if ((px ushr 24) < 128) {
+                    hasTransparency = true
+                    break
+                }
+            }
+
+            // Trim outer border (1px for >=6px, 2px for >=28px) only when template has no custom transparency mask
+            val marginX = if (hasTransparency) 0 else when {
                 tW >= 28 -> 2
                 tW >= 6 -> 1
                 else -> 0
             }
-            val marginY = when {
+            val marginY = if (hasTransparency) 0 else when {
                 tH >= 28 -> 2
                 tH >= 6 -> 1
                 else -> 0
@@ -2091,33 +2099,73 @@ class AutoClickService : AccessibilityService() {
             val startTy = marginY
             val endTy = tH - marginY
 
+            var effectiveStep = checkStep
             var totalPixelsChecked = 0
-            var tyCount = startTy
-            while (tyCount < endTy) {
-                var txCount = startTx
-                while (txCount < endTx) {
-                    totalPixelsChecked++
-                    txCount += checkStep
+            fun countOpaqueSamples(step: Int): Int {
+                var count = 0
+                var tyC = startTy
+                while (tyC < endTy) {
+                    val rowOff = tyC * tW
+                    var txC = startTx
+                    while (txC < endTx) {
+                        if ((pTarget[rowOff + txC] ushr 24) >= 128) {
+                            count++
+                        }
+                        txC += step
+                    }
+                    tyC += step
                 }
-                tyCount += checkStep
+                return count
+            }
+            totalPixelsChecked = countOpaqueSamples(effectiveStep)
+            if (totalPixelsChecked < 16 && effectiveStep > 1) {
+                effectiveStep = 1
+                totalPixelsChecked = countOpaqueSamples(1)
             }
             if (totalPixelsChecked == 0) continue
 
-            // 5 interior anchor points for fast pre-filtering on large search areas
-            val ax0 = tW / 2
-            val ay0 = tH / 2
-            val ax1 = maxOf(startTx, tW / 3)
-            val ay1 = maxOf(startTy, tH / 3)
-            val ax2 = minOf(endTx - 1, (tW * 2) / 3)
-            val ay2 = ay1
-            val ax3 = ax1
-            val ay3 = minOf(endTy - 1, (tH * 2) / 3)
-            val ax4 = ax2
-            val ay4 = ay3
+            // Helper to snap any anchor coordinate to the nearest opaque pixel in the sprite
+            fun snapToOpaque(prefX: Int, prefY: Int): Pair<Int, Int> {
+                val cx = prefX.coerceIn(startTx, (endTx - 1).coerceAtLeast(startTx))
+                val cy = prefY.coerceIn(startTy, (endTy - 1).coerceAtLeast(startTy))
+                if ((pTarget[cy * tW + cx] ushr 24) >= 128) return Pair(cx, cy)
+                val maxR = maxOf(tW, tH)
+                for (r in 1..maxR) {
+                    val minY = maxOf(startTy, cy - r)
+                    val maxY = minOf(endTy - 1, cy + r)
+                    val minX = maxOf(startTx, cx - r)
+                    val maxX = minOf(endTx - 1, cx + r)
+                    for (y in minY..maxY) {
+                        for (x in minX..maxX) {
+                            if (Math.abs(x - cx) == r || Math.abs(y - cy) == r) {
+                                if ((pTarget[y * tW + x] ushr 24) >= 128) {
+                                    return Pair(x, y)
+                                }
+                            }
+                        }
+                    }
+                }
+                return Pair(cx, cy)
+            }
 
-            val anchorTx = intArrayOf(ax0, ax1, ax2, ax3, ax4)
-            val anchorTy = intArrayOf(ay0, ay1, ay2, ay3, ay4)
-            val anchorColors = IntArray(5) { idx -> pTarget[anchorTy[idx] * tW + anchorTx[idx]] }
+            // 5 interior anchor points for fast pre-filtering on large search areas (snapped to opaque sprite pixels)
+            val rawAnchors = arrayOf(
+                Pair(tW / 2, tH / 2),
+                Pair(maxOf(startTx, tW / 3), maxOf(startTy, tH / 3)),
+                Pair(minOf(endTx - 1, (tW * 2) / 3), maxOf(startTy, tH / 3)),
+                Pair(maxOf(startTx, tW / 3), minOf(endTy - 1, (tH * 2) / 3)),
+                Pair(minOf(endTx - 1, (tW * 2) / 3), minOf(endTy - 1, (tH * 2) / 3))
+            )
+
+            val anchorTx = IntArray(5)
+            val anchorTy = IntArray(5)
+            val anchorColors = IntArray(5)
+            for (idx in 0 until 5) {
+                val snapped = snapToOpaque(rawAnchors[idx].first, rawAnchors[idx].second)
+                anchorTx[idx] = snapped.first
+                anchorTy[idx] = snapped.second
+                anchorColors[idx] = pTarget[snapped.second * tW + snapped.first]
+            }
 
             // Checks if an anchor point matches screen at (sx, sy) or its 1px neighbors (sub-pixel/1px shift resilience)
             fun anchorMatchesAt(sx: Int, sy: Int, targetColor: Int): Boolean {
@@ -2177,7 +2225,7 @@ class AutoClickService : AccessibilityService() {
                 return matchedAnchors >= 3
             }
 
-            // Full template evaluation with sub-pixel edge resilience (1px neighbor fallback for anti-aliased edges)
+            // Full template evaluation with transparency mask support and sub-pixel edge resilience
             fun evaluateAt(dx: Int, dy: Int, requiredPct: Float): Float {
                 val maxHalfMismatches = (((100f - requiredPct) / 100f) * totalPixelsChecked * 2f).toInt() + 2
                 var halfMismatches = 0
@@ -2189,6 +2237,11 @@ class AutoClickService : AccessibilityService() {
                     var tx = startTx
                     while (tx < endTx) {
                         val c2 = pTarget[tgtOffset + tx]
+                        // Skip transparent (masked out background) pixels in the sprite
+                        if ((c2 ushr 24) < 128) {
+                            tx += effectiveStep
+                            continue
+                        }
                         val tr = (c2 shr 16) and 0xFF
                         val tg = (c2 shr 8) and 0xFF
                         val tb = c2 and 0xFF
@@ -2240,9 +2293,9 @@ class AutoClickService : AccessibilityService() {
                             }
                             if (halfMismatches > maxHalfMismatches) return 0f
                         }
-                        tx += checkStep
+                        tx += effectiveStep
                     }
-                    ty += checkStep
+                    ty += effectiveStep
                 }
                 val matchedEquivalent = totalPixelsChecked.toFloat() - (halfMismatches / 2f)
                 return ((matchedEquivalent / totalPixelsChecked) * 100f).coerceIn(0f, 100f)
@@ -3499,5 +3552,47 @@ class AutoClickService : AccessibilityService() {
         val gesture = android.accessibilityservice.GestureDescription.Builder().addStroke(stroke).build()
         gestureQueue.offer(QueuedGesture(gesture, duration, false))
         processGestureQueue()
+    }
+
+    fun getSavedSprites(): List<SavedSprite> {
+        val prefs = getSharedPreferences("AutoClickerSprites", android.content.Context.MODE_PRIVATE)
+        val result = mutableListOf<SavedSprite>()
+        for ((key, rawVal) in prefs.all) {
+            val jsonStr = rawVal as? String ?: continue
+            try {
+                val obj = org.json.JSONObject(jsonStr)
+                val b64 = obj.optString("base64", "")
+                if (b64.isNotEmpty()) {
+                    result.add(
+                        SavedSprite(
+                            name = obj.optString("name", key),
+                            base64 = b64,
+                            width = obj.optInt("width", 0),
+                            height = obj.optInt("height", 0),
+                            createdAt = obj.optLong("createdAt", 0L)
+                        )
+                    )
+                }
+            } catch (_: Exception) {}
+        }
+        return result.sortedByDescending { it.createdAt }
+    }
+
+    fun saveSpriteToLibrary(name: String, base64: String, width: Int, height: Int) {
+        val cleanName = name.trim().ifEmpty { "Спрайт (${width}x${height})" }
+        val prefs = getSharedPreferences("AutoClickerSprites", android.content.Context.MODE_PRIVATE)
+        val obj = org.json.JSONObject().apply {
+            put("name", cleanName)
+            put("base64", base64)
+            put("width", width)
+            put("height", height)
+            put("createdAt", System.currentTimeMillis())
+        }
+        prefs.edit().putString(cleanName, obj.toString()).apply()
+    }
+
+    fun deleteSpriteFromLibrary(name: String) {
+        val prefs = getSharedPreferences("AutoClickerSprites", android.content.Context.MODE_PRIVATE)
+        prefs.edit().remove(name).apply()
     }
 }
