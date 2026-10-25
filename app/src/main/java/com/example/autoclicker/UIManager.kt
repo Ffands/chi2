@@ -3149,7 +3149,7 @@ class UIManager(private val service: AutoClickService) {
                     setPadding(dpToPx(10), dpToPx(7), dpToPx(10), dpToPx(7))
                 }
                 (parent as? Spinner)?.let { sp ->
-                    sp.minHeight = 0
+                    sp.minimumWidth = 0
                     sp.minimumHeight = 0
                     sp.background = null
                     sp.setPadding(0, 0, 0, 0)
