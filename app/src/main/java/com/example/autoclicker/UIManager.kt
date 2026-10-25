@@ -4951,7 +4951,7 @@ class UIManager(private val service: AutoClickService) {
         spriteEditorPanel.addView(editorStatsTv)
 
         lateinit var spriteCanvasView: View
-        lateinit var undoEditorBtn: Button
+        var undoEditorBtn: Button? = null
 
         fun updateEditorStats() {
             if (editW <= 0 || editH <= 0 || editPixels.isEmpty()) return
@@ -4963,9 +4963,7 @@ class UIManager(private val service: AutoClickService) {
             val activePct = ((opaqueCount * 100f) / total.coerceAtLeast(1)).toInt()
             val maskedPct = 100 - activePct
             editorStatsTv.text = "Размер: ${editW}×${editH} px | Спрайт: $activePct% ($opaqueCount пикс.) | Удалено фона: $maskedPct%"
-            if (::undoEditorBtn.isInitialized) {
-                undoEditorBtn.text = "↩️ Назад (${undoStack.size})"
-            }
+            undoEditorBtn?.text = "↩️ Назад (${undoStack.size})"
         }
 
         fun colorMatchesWithinTol(c1: Int, c2: Int, tol: Int): Boolean {
@@ -5440,7 +5438,7 @@ class UIManager(private val service: AutoClickService) {
             gravity = Gravity.CENTER_VERTICAL
             layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT)
         }
-        undoEditorBtn = Button(service).apply {
+        val undoBtnView = Button(service).apply {
             text = "↩️ Назад (0)"
             stylePillButton(this, "#37474F", null, 8, 11f)
             setPadding(dpToPx(4), 0, dpToPx(4), 0)
@@ -5461,6 +5459,7 @@ class UIManager(private val service: AutoClickService) {
                 spriteCanvasView.invalidate()
             }
         }
+        undoEditorBtn = undoBtnView
         val resetEditorBtn = Button(service).apply {
             text = "🔄 Сброс"
             stylePillButton(this, "#455A64", null, 8, 11f)
@@ -5510,7 +5509,7 @@ class UIManager(private val service: AutoClickService) {
                 }
             }
         }
-        editorBottomRow.addView(undoEditorBtn)
+        editorBottomRow.addView(undoBtnView)
         editorBottomRow.addView(resetEditorBtn)
         editorBottomRow.addView(applyEditorBtn)
         spriteEditorPanel.addView(editorBottomRow)
