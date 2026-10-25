@@ -913,6 +913,39 @@ class AutoClickService : AccessibilityService() {
             var actionDurationMs = 0L
             if (isMatch) {
                 thread.currentCheckCycle = 0
+                val isMultiTargetClick = node.triggerMode == 1 &&
+                    node.imageMultiTarget &&
+                    node.lastFoundCenters.size > 1 &&
+                    (node.type == NodeType.CLICK || node.imageClickFoundCenter)
+
+                if (isMultiTargetClick) {
+                    val centersToClick = node.lastFoundCenters.toList()
+                    if (::uiManager.isInitialized) {
+                        val orderLabel = if (node.imageMultiRandomOrder) "случайный порядок" else "по порядку"
+                        uiManager.logDebug("Поток ${thread.threadId} Шаг ${node.id}: Мульти-цель — найдено ${centersToClick.size} шт. ($orderLabel)")
+                    }
+                    performMultiTargetClicks(thread, node, centersToClick, 0) {
+                        if (!isPlaying || !thread.isActive) return@performMultiTargetClicks
+                        thread.currentRepetition++
+                        if (thread.currentRepetition < node.repetitions) {
+                            thread.currentNodeId = node.id
+                        } else {
+                            thread.currentRepetition = 0
+                            thread.currentNodeId = node.nextNodeIdOnSuccess ?: getNextNodeLinear(node.id, currentNodesList)
+                        }
+                        updateHighlight()
+                        val randomDelay = if (node.randomizeDelayMs > 0) (0..node.randomizeDelayMs).random() else 0L
+                        val requestedDelay = Math.max(0L, node.delayAfterMs + randomDelay)
+                        val finalDelay = Limits.getStepDelay(allowExtremeSpeed, requestedDelay)
+                        if (finalDelay <= 0L) {
+                            handler.post { executeThread(thread) }
+                        } else {
+                            handler.postDelayed({ executeThread(thread) }, finalDelay)
+                        }
+                    }
+                    return@checkConditionForNode
+                }
+
                 if (node.type == NodeType.CLICK) {
                     val activeNodes = mutableListOf(node)
                     if (node.syncWithNodeIds.isNotEmpty()) {
@@ -1808,43 +1841,156 @@ class AutoClickService : AccessibilityService() {
         }
     }
 
-    private fun ensureTemplateCached(node: TargetNode, screenW: Int, screenH: Int): Boolean {
-        if (node.cachedTargetBitmap != null && node.cachedTargetPixels != null && node.cachedTargetW > 0 && node.cachedTargetH > 0) {
-            return true
+    private fun performMultiTargetClicks(
+        thread: ExecutionThread,
+        node: TargetNode,
+        centers: List<Pair<Int, Int>>,
+        index: Int,
+        onAllDone: () -> Unit
+    ) {
+        if (!isPlaying || !thread.isActive || index >= centers.size) {
+            onAllDone()
+            return
         }
-        val b64 = node.targetImageBase64 ?: return false
-        return try {
-            val bytes = android.util.Base64.decode(b64, android.util.Base64.DEFAULT)
-            var bmp = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return false
-            if (bmp.width > screenW || bmp.height > screenH) {
-                val scale = minOf(screenW.toFloat() / bmp.width, screenH.toFloat() / bmp.height)
-                val sw = maxOf(1, (bmp.width * scale).toInt())
-                val sh = maxOf(1, (bmp.height * scale).toInt())
-                val resized = Bitmap.createScaledBitmap(bmp, sw, sh, true)
-                if (resized != bmp) bmp.recycle()
-                bmp = resized
+        val (cx, cy) = centers[index]
+        node.lastFoundCenterX = cx
+        node.lastFoundCenterY = cy
+
+        var actionDur = 0L
+        if (node.type == NodeType.CLICK) {
+            val activeNodes = mutableListOf(node)
+            if (node.syncWithNodeIds.isNotEmpty()) {
+                val idsStr = node.syncWithNodeIds.split(",")
+                val currentNodesList = thread.currentScriptNodes ?: this.nodes
+                for (idStr in idsStr) {
+                    val id = idStr.trim().toIntOrNull()
+                    if (id != null) {
+                        val syncNode = currentNodesList.find { it.id == id }
+                        if (syncNode != null && syncNode.type == NodeType.CLICK) {
+                            activeNodes.add(syncNode)
+                        }
+                    }
+                }
             }
-            val w = bmp.width
-            val h = bmp.height
-            val px = IntArray(w * h)
-            bmp.getPixels(px, 0, w, 0, 0, w, h)
-            node.cachedTargetBitmap = bmp
-            node.cachedTargetPixels = px
-            node.cachedTargetW = w
-            node.cachedTargetH = h
-            true
-        } catch (e: Exception) {
-            e.printStackTrace()
-            false
+            if (::uiManager.isInitialized) {
+                uiManager.logDebug("Поток ${thread.threadId} Шаг ${node.id}: Цель [${index + 1}/${centers.size}] -> (${cx}, ${cy})")
+            }
+            actionDur = performGestureForNodes(activeNodes)
+        } else {
+            val dur = Limits.getClickDuration(allowExtremeSpeed, node.clickDurationMs)
+            if (::uiManager.isInitialized) {
+                uiManager.logDebug("Поток ${thread.threadId} Шаг ${node.id}: Клик по цели [${index + 1}/${centers.size}] -> (${cx}, ${cy})")
+            }
+            performGlobalClick(cx.toFloat(), cy.toFloat(), dur)
+            actionDur = dur
+        }
+
+        if (index + 1 < centers.size) {
+            val randPause = if (node.imageMultiRandomDelayMs > 0) (0..node.imageMultiRandomDelayMs).random() else 0L
+            val interDelay = maxOf(Limits.MIN_STEP_DELAY, node.imageMultiClickDelayMs + randPause) + maxOf(15L, actionDur)
+            handler.postDelayed({
+                performMultiTargetClicks(thread, node, centers, index + 1, onAllDone)
+            }, interDelay)
+        } else {
+            val finishWait = if (actionDur > 15L) actionDur else 15L
+            handler.postDelayed({ onAllDone() }, finishWait)
         }
     }
+
+    private fun ensureTemplateCached(node: TargetNode, screenW: Int, screenH: Int): Boolean {
+        val b64 = node.targetImageBase64 ?: return false
+        try {
+            if (node.cachedTargetBitmap == null || node.cachedTargetPixels == null || node.cachedTargetW <= 0 || node.cachedTargetH <= 0) {
+                val bytes = android.util.Base64.decode(b64, android.util.Base64.DEFAULT)
+                var bmp = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return false
+                if (bmp.width > screenW || bmp.height > screenH) {
+                    val scale = minOf(screenW.toFloat() / bmp.width, screenH.toFloat() / bmp.height)
+                    val sw = maxOf(1, (bmp.width * scale).toInt())
+                    val sh = maxOf(1, (bmp.height * scale).toInt())
+                    val resized = Bitmap.createScaledBitmap(bmp, sw, sh, true)
+                    if (resized != bmp) bmp.recycle()
+                    bmp = resized
+                }
+                val w = bmp.width
+                val h = bmp.height
+                val px = IntArray(w * h)
+                bmp.getPixels(px, 0, w, 0, 0, w, h)
+                node.cachedTargetBitmap = bmp
+                node.cachedTargetPixels = px
+                node.cachedTargetW = w
+                node.cachedTargetH = h
+                node.cachedScaledTemplates = null
+            }
+
+            val baseBmp = node.cachedTargetBitmap ?: return false
+            val basePx = node.cachedTargetPixels ?: return false
+            val origW = node.cachedTargetW
+            val origH = node.cachedTargetH
+            val rangePct = node.imageScaleRangePct.coerceIn(5, 50)
+
+            if (node.cachedScaledTemplates == null ||
+                node.cachedAdaptiveScaleEnabled != node.imageAdaptiveScale ||
+                node.cachedAdaptiveScaleRangePct != rangePct
+            ) {
+                val templates = mutableListOf<ScaledTemplate>()
+                templates.add(ScaledTemplate(1.0f, origW, origH, basePx))
+
+                if (node.imageAdaptiveScale) {
+                    val seenSizes = HashSet<Long>()
+                    seenSizes.add((origW.toLong() shl 32) or (origH.toLong() and 0xFFFFFFFFL))
+
+                    val stepPct = 5
+                    var deltaPct = stepPct
+                    while (deltaPct <= rangePct) {
+                        for (sign in intArrayOf(-1, 1)) {
+                            val factor = 1.0f + (sign * deltaPct) / 100f
+                            if (factor < 0.4f || factor > 2.0f) continue
+                            val sw = Math.round(origW * factor)
+                            val sh = Math.round(origH * factor)
+                            if (sw < 4 || sh < 4 || sw > screenW || sh > screenH) continue
+                            val key = (sw.toLong() shl 32) or (sh.toLong() and 0xFFFFFFFFL)
+                            if (seenSizes.add(key)) {
+                                val scaledBmp = Bitmap.createScaledBitmap(baseBmp, sw, sh, true)
+                                val scaledPx = IntArray(sw * sh)
+                                scaledBmp.getPixels(scaledPx, 0, sw, 0, 0, sw, sh)
+                                if (scaledBmp != baseBmp && !scaledBmp.isRecycled) {
+                                    scaledBmp.recycle()
+                                }
+                                templates.add(ScaledTemplate(factor, sw, sh, scaledPx))
+                            }
+                        }
+                        deltaPct += stepPct
+                    }
+                }
+                node.cachedScaledTemplates = templates
+                node.cachedAdaptiveScaleEnabled = node.imageAdaptiveScale
+                node.cachedAdaptiveScaleRangePct = rangePct
+            }
+            return true
+        } catch (e: Exception) {
+            e.printStackTrace()
+            return false
+        }
+    }
+
+    private data class CandidateMatch(
+        val centerX: Int,
+        val centerY: Int,
+        val pct: Float,
+        val scaleFactor: Float,
+        val w: Int,
+        val h: Int
+    )
 
     private fun searchTemplateInBitmap(node: TargetNode, bitmap: Bitmap): Pair<Boolean, Float> {
         if (!ensureTemplateCached(node, bitmap.width, bitmap.height)) return Pair(false, 0f)
         val origW = node.cachedTargetW
         val origH = node.cachedTargetH
-        val pTarget = node.cachedTargetPixels ?: return Pair(false, 0f)
+        val templates = node.cachedScaledTemplates ?: return Pair(false, 0f)
         if (origW <= 0 || origH <= 0 || origW > bitmap.width || origH > bitmap.height) return Pair(false, 0f)
+
+        val maxTemplateW = templates.maxOfOrNull { it.w } ?: origW
+        val maxTemplateH = templates.maxOfOrNull { it.h } ?: origH
 
         val r = node.searchRadius.coerceAtLeast(0)
         val searchRectLeft: Int
@@ -1874,145 +2020,411 @@ class AutoClickService : AccessibilityService() {
                 baseTop = minOf(startY, endY)
                 baseRight = maxOf(startX, endX)
                 baseBottom = maxOf(startY, endY)
-                // If imported template is larger than current zone, expand around zone center to fit template
-                if (baseRight - baseLeft < origW) {
+                if (baseRight - baseLeft < maxTemplateW) {
                     val cx = (baseLeft + baseRight) / 2
-                    baseLeft = cx - origW / 2
-                    baseRight = baseLeft + origW
+                    baseLeft = cx - maxTemplateW / 2
+                    baseRight = baseLeft + maxTemplateW
                 }
-                if (baseBottom - baseTop < origH) {
+                if (baseBottom - baseTop < maxTemplateH) {
                     val cy = (baseTop + baseBottom) / 2
-                    baseTop = cy - origH / 2
-                    baseBottom = baseTop + origH
+                    baseTop = cy - maxTemplateH / 2
+                    baseBottom = baseTop + maxTemplateH
                 }
             } else {
-                baseLeft = node.x - origW / 2
-                baseTop = node.y - origH / 2
-                baseRight = baseLeft + origW
-                baseBottom = baseTop + origH
+                baseLeft = node.x - maxTemplateW / 2
+                baseTop = node.y - maxTemplateH / 2
+                baseRight = baseLeft + maxTemplateW
+                baseBottom = baseTop + maxTemplateH
             }
 
-            // Add small 2px margin even when r == 0 so minor sub-pixel shifts don't fail
-            val effR = maxOf(r, 2)
-            searchRectLeft = (baseLeft - effR).coerceIn(0, bitmap.width - origW)
-            searchRectTop = (baseTop - effR).coerceIn(0, bitmap.height - origH)
-            searchRectRight = (baseRight + effR).coerceIn(searchRectLeft + origW, bitmap.width)
-            searchRectBottom = (baseBottom + effR).coerceIn(searchRectTop + origH, bitmap.height)
+            // Provide a generous default local search window (at least 18px or half template size)
+            // so small UI shifts or slightly off-center markers/frames never miss the target.
+            val minMargin = maxOf(18, minOf(origW, origH) / 2)
+            val effR = maxOf(r, minMargin)
+            searchRectLeft = (baseLeft - effR).coerceIn(0, maxOf(0, bitmap.width - maxTemplateW))
+            searchRectTop = (baseTop - effR).coerceIn(0, maxOf(0, bitmap.height - maxTemplateH))
+            searchRectRight = (baseRight + effR).coerceIn(minOf(bitmap.width, searchRectLeft + maxTemplateW), bitmap.width)
+            searchRectBottom = (baseBottom + effR).coerceIn(minOf(bitmap.height, searchRectTop + maxTemplateH), bitmap.height)
         }
 
         val sW = searchRectRight - searchRectLeft
         val sH = searchRectBottom - searchRectTop
-        if (sW < origW || sH < origH) return Pair(false, 0f)
+        if (sW <= 0 || sH <= 0) return Pair(false, 0f)
 
         val pSearch = IntArray(sW * sH)
         bitmap.getPixels(pSearch, 0, sW, searchRectLeft, searchRectTop, sW, sH)
 
-        val baseStep = (1f / node.checkResolutionScale.coerceIn(0.1f, 1.0f)).toInt().coerceAtLeast(1)
-        // Cap template sample points at ~450 for fast execution even on large templates
-        val densityStep = Math.sqrt((origW * origH) / 450.0).toInt().coerceAtLeast(1)
-        val checkStep = maxOf(baseStep, densityStep)
-
-        var totalPixelsChecked = 0
-        var tyCount = 0
-        while (tyCount < origH) {
-            var txCount = 0
-            while (txCount < origW) {
-                totalPixelsChecked++
-                txCount += checkStep
-            }
-            tyCount += checkStep
-        }
-        if (totalPixelsChecked == 0) return Pair(false, 0f)
-
         val tol = node.colorTolerance
+        val softTol = tol + 14
+        val anchorTol = tol + 18
         val targetThreshold = node.imageThreshold.coerceIn(1f, 100f)
+        val wantMulti = node.imageMultiTarget
 
-        fun evaluateAt(dx: Int, dy: Int, requiredPct: Float): Float {
-            val maxMismatches = (((100f - requiredPct) / 100f) * totalPixelsChecked).toInt() + 1
-            var mismatches = 0
-            var ty = 0
-            while (ty < origH) {
-                val tgtOffset = ty * origW
-                val srcOffset = (dy + ty) * sW + dx
-                var tx = 0
-                while (tx < origW) {
-                    val c1 = pSearch[srcOffset + tx]
-                    val c2 = pTarget[tgtOffset + tx]
-                    val rDiff = Math.abs(((c1 shr 16) and 0xFF) - ((c2 shr 16) and 0xFF))
-                    val gDiff = Math.abs(((c1 shr 8) and 0xFF) - ((c2 shr 8) and 0xFF))
-                    val bDiff = Math.abs((c1 and 0xFF) - (c2 and 0xFF))
-                    if (rDiff > tol || gDiff > tol || bDiff > tol) {
-                        mismatches++
-                        if (mismatches > maxMismatches) return 0f // Early exit!
-                    }
-                    tx += checkStep
-                }
-                ty += checkStep
+        val allCandidates = mutableListOf<CandidateMatch>()
+        var globalBestPct = 0f
+        var bestFallbackCenter: Pair<Int, Int>? = null
+
+        for (tpl in templates) {
+            val tW = tpl.w
+            val tH = tpl.h
+            val pTarget = tpl.pixels
+            if (tW > sW || tH > sH) continue
+
+            val isSmallTemplate = (tW * tH <= 4096) || (minOf(tW, tH) <= 52)
+            val baseStep = if (isSmallTemplate) 1 else (1f / node.checkResolutionScale.coerceIn(0.1f, 1.0f)).toInt().coerceAtLeast(1)
+            val densityStep = if (isSmallTemplate) 1 else Math.sqrt((tW * tH) / 650.0).toInt().coerceAtLeast(1)
+            val checkStep = maxOf(baseStep, densityStep)
+
+            // Trim outer border (1px for >=6px, 2px for >=28px) so background bleed at template edges doesn't penalize matches
+            val marginX = when {
+                tW >= 28 -> 2
+                tW >= 6 -> 1
+                else -> 0
             }
-            return ((totalPixelsChecked - mismatches).toFloat() / totalPixelsChecked) * 100f
-        }
-
-        val maxX = sW - origW
-        val maxY = sH - origH
-        val totalPositions = (maxX + 1).toLong() * (maxY + 1).toLong()
-        var bestPct = 0f
-
-        if (totalPositions <= 900L) {
-            val step = if (totalPositions <= 225L) 1 else 2
-            var dy = 0
-            while (dy <= maxY) {
-                var dx = 0
-                while (dx <= maxX) {
-                    val pct = evaluateAt(dx, dy, targetThreshold)
-                    if (pct > bestPct) bestPct = pct
-                    if (pct >= targetThreshold) {
-                        node.lastFoundCenterX = searchRectLeft + dx + origW / 2
-                        node.lastFoundCenterY = searchRectTop + dy + origH / 2
-                        return Pair(true, pct)
-                    }
-                    dx += step
-                }
-                dy += step
+            val marginY = when {
+                tH >= 28 -> 2
+                tH >= 6 -> 1
+                else -> 0
             }
-        } else {
-            // Coarse-to-Fine search for large area / full screen
-            val coarseStep = maxOf(2, minOf(origW, origH) / 4).coerceIn(2, 6)
-            val coarseThreshold = maxOf(45f, targetThreshold - 22f)
-            var dy = 0
-            while (dy <= maxY) {
-                var dx = 0
-                while (dx <= maxX) {
-                    val coarsePct = evaluateAt(dx, dy, coarseThreshold)
-                    if (coarsePct > bestPct) bestPct = coarsePct
-                    if (coarsePct >= targetThreshold) {
-                        node.lastFoundCenterX = searchRectLeft + dx + origW / 2
-                        node.lastFoundCenterY = searchRectTop + dy + origH / 2
-                        return Pair(true, coarsePct)
-                    } else if (coarsePct >= coarseThreshold) {
-                        // Fine refinement around candidate
-                        val minFy = maxOf(0, dy - coarseStep + 1)
-                        val maxFy = minOf(maxY, dy + coarseStep - 1)
-                        val minFx = maxOf(0, dx - coarseStep + 1)
-                        val maxFx = minOf(maxX, dx + coarseStep - 1)
-                        for (fdy in minFy..maxFy) {
-                            for (fdx in minFx..maxFx) {
-                                val finePct = evaluateAt(fdx, fdy, targetThreshold)
-                                if (finePct > bestPct) bestPct = finePct
-                                if (finePct >= targetThreshold) {
-                                    node.lastFoundCenterX = searchRectLeft + fdx + origW / 2
-                                    node.lastFoundCenterY = searchRectTop + fdy + origH / 2
-                                    return Pair(true, finePct)
+            val startTx = marginX
+            val endTx = tW - marginX
+            val startTy = marginY
+            val endTy = tH - marginY
+
+            var totalPixelsChecked = 0
+            var tyCount = startTy
+            while (tyCount < endTy) {
+                var txCount = startTx
+                while (txCount < endTx) {
+                    totalPixelsChecked++
+                    txCount += checkStep
+                }
+                tyCount += checkStep
+            }
+            if (totalPixelsChecked == 0) continue
+
+            // 5 interior anchor points for fast pre-filtering on large search areas
+            val ax0 = tW / 2
+            val ay0 = tH / 2
+            val ax1 = maxOf(startTx, tW / 3)
+            val ay1 = maxOf(startTy, tH / 3)
+            val ax2 = minOf(endTx - 1, (tW * 2) / 3)
+            val ay2 = ay1
+            val ax3 = ax1
+            val ay3 = minOf(endTy - 1, (tH * 2) / 3)
+            val ax4 = ax2
+            val ay4 = ay3
+
+            val anchorTx = intArrayOf(ax0, ax1, ax2, ax3, ax4)
+            val anchorTy = intArrayOf(ay0, ay1, ay2, ay3, ay4)
+            val anchorColors = IntArray(5) { idx -> pTarget[anchorTy[idx] * tW + anchorTx[idx]] }
+
+            // Checks if an anchor point matches screen at (sx, sy) or its 1px neighbors (sub-pixel/1px shift resilience)
+            fun anchorMatchesAt(sx: Int, sy: Int, targetColor: Int): Boolean {
+                val tr = (targetColor shr 16) and 0xFF
+                val tg = (targetColor shr 8) and 0xFF
+                val tb = targetColor and 0xFF
+                val baseIdx = sy * sW + sx
+                val c0 = pSearch[baseIdx]
+                if (Math.abs(((c0 shr 16) and 0xFF) - tr) <= anchorTol &&
+                    Math.abs(((c0 shr 8) and 0xFF) - tg) <= anchorTol &&
+                    Math.abs((c0 and 0xFF) - tb) <= anchorTol
+                ) return true
+
+                // Check 4-connected 1px neighbors so coarse step or sub-pixel anti-aliasing never skips a valid small icon
+                if (sx > 0) {
+                    val cL = pSearch[baseIdx - 1]
+                    if (Math.abs(((cL shr 16) and 0xFF) - tr) <= anchorTol &&
+                        Math.abs(((cL shr 8) and 0xFF) - tg) <= anchorTol &&
+                        Math.abs((cL and 0xFF) - tb) <= anchorTol
+                    ) return true
+                }
+                if (sx + 1 < sW) {
+                    val cR = pSearch[baseIdx + 1]
+                    if (Math.abs(((cR shr 16) and 0xFF) - tr) <= anchorTol &&
+                        Math.abs(((cR shr 8) and 0xFF) - tg) <= anchorTol &&
+                        Math.abs((cR and 0xFF) - tb) <= anchorTol
+                    ) return true
+                }
+                if (sy > 0) {
+                    val cU = pSearch[baseIdx - sW]
+                    if (Math.abs(((cU shr 16) and 0xFF) - tr) <= anchorTol &&
+                        Math.abs(((cU shr 8) and 0xFF) - tg) <= anchorTol &&
+                        Math.abs((cU and 0xFF) - tb) <= anchorTol
+                    ) return true
+                }
+                if (sy + 1 < sH) {
+                    val cD = pSearch[baseIdx + sW]
+                    if (Math.abs(((cD shr 16) and 0xFF) - tr) <= anchorTol &&
+                        Math.abs(((cD shr 8) and 0xFF) - tg) <= anchorTol &&
+                        Math.abs((cD and 0xFF) - tb) <= anchorTol
+                    ) return true
+                }
+                return false
+            }
+
+            fun anchorsPass(dx: Int, dy: Int): Boolean {
+                var matchedAnchors = 0
+                for (i in 0 until 5) {
+                    if (anchorMatchesAt(dx + anchorTx[i], dy + anchorTy[i], anchorColors[i])) {
+                        matchedAnchors++
+                        if (matchedAnchors >= 3) return true
+                    } else if (i - matchedAnchors >= 2) {
+                        // Already 3 failed anchors -> cannot reach 3/5
+                        return false
+                    }
+                }
+                return matchedAnchors >= 3
+            }
+
+            // Full template evaluation with sub-pixel edge resilience (1px neighbor fallback for anti-aliased edges)
+            fun evaluateAt(dx: Int, dy: Int, requiredPct: Float): Float {
+                val maxHalfMismatches = (((100f - requiredPct) / 100f) * totalPixelsChecked * 2f).toInt() + 2
+                var halfMismatches = 0
+                var ty = startTy
+                while (ty < endTy) {
+                    val tgtOffset = ty * tW
+                    val sy = dy + ty
+                    val srcOffset = sy * sW + dx
+                    var tx = startTx
+                    while (tx < endTx) {
+                        val c2 = pTarget[tgtOffset + tx]
+                        val tr = (c2 shr 16) and 0xFF
+                        val tg = (c2 shr 8) and 0xFF
+                        val tb = c2 and 0xFF
+
+                        val sxIdx = srcOffset + tx
+                        val c1 = pSearch[sxIdx]
+                        val rDiff = Math.abs(((c1 shr 16) and 0xFF) - tr)
+                        val gDiff = Math.abs(((c1 shr 8) and 0xFF) - tg)
+                        val bDiff = Math.abs((c1 and 0xFF) - tb)
+
+                        if (rDiff > tol || gDiff > tol || bDiff > tol) {
+                            val avgDiff = (rDiff + gDiff + bDiff) / 3
+                            if (avgDiff <= softTol) {
+                                halfMismatches += 1
+                            } else {
+                                // Sub-pixel / anti-aliasing resilience: check if immediate 1px neighbor matches closely
+                                val sx = dx + tx
+                                var subPixelMatched = false
+                                if (sx + 1 < sW) {
+                                    val cn = pSearch[sxIdx + 1]
+                                    if (Math.abs(((cn shr 16) and 0xFF) - tr) <= softTol &&
+                                        Math.abs(((cn shr 8) and 0xFF) - tg) <= softTol &&
+                                        Math.abs((cn and 0xFF) - tb) <= softTol
+                                    ) subPixelMatched = true
+                                }
+                                if (!subPixelMatched && sx > 0) {
+                                    val cn = pSearch[sxIdx - 1]
+                                    if (Math.abs(((cn shr 16) and 0xFF) - tr) <= softTol &&
+                                        Math.abs(((cn shr 8) and 0xFF) - tg) <= softTol &&
+                                        Math.abs((cn and 0xFF) - tb) <= softTol
+                                    ) subPixelMatched = true
+                                }
+                                if (!subPixelMatched && sy + 1 < sH) {
+                                    val cn = pSearch[sxIdx + sW]
+                                    if (Math.abs(((cn shr 16) and 0xFF) - tr) <= softTol &&
+                                        Math.abs(((cn shr 8) and 0xFF) - tg) <= softTol &&
+                                        Math.abs((cn and 0xFF) - tb) <= softTol
+                                    ) subPixelMatched = true
+                                }
+                                if (!subPixelMatched && sy > 0) {
+                                    val cn = pSearch[sxIdx - sW]
+                                    if (Math.abs(((cn shr 16) and 0xFF) - tr) <= softTol &&
+                                        Math.abs(((cn shr 8) and 0xFF) - tg) <= softTol &&
+                                        Math.abs((cn and 0xFF) - tb) <= softTol
+                                    ) subPixelMatched = true
+                                }
+
+                                halfMismatches += if (subPixelMatched) 1 else 2
+                            }
+                            if (halfMismatches > maxHalfMismatches) return 0f
+                        }
+                        tx += checkStep
+                    }
+                    ty += checkStep
+                }
+                val matchedEquivalent = totalPixelsChecked.toFloat() - (halfMismatches / 2f)
+                return ((matchedEquivalent / totalPixelsChecked) * 100f).coerceIn(0f, 100f)
+            }
+
+            val maxX = sW - tW
+            val maxY = sH - tH
+            val totalPositions = (maxX + 1).toLong() * (maxY + 1).toLong()
+
+            // Local peak refinement around a hit (dx, dy) within ±radius
+            fun refinePeak(centerDx: Int, centerDy: Int, radius: Int): Triple<Int, Int, Float> {
+                var bestDx = centerDx
+                var bestDy = centerDy
+                var bestLocalPct = evaluateAt(centerDx, centerDy, 0f)
+                val minFy = maxOf(0, centerDy - radius)
+                val maxFy = minOf(maxY, centerDy + radius)
+                val minFx = maxOf(0, centerDx - radius)
+                val maxFx = minOf(maxX, centerDx + radius)
+                for (fdy in minFy..maxFy) {
+                    for (fdx in minFx..maxFx) {
+                        if (fdx == centerDx && fdy == centerDy) continue
+                        val p = evaluateAt(fdx, fdy, maxOf(bestLocalPct, targetThreshold - 5f))
+                        if (p > bestLocalPct) {
+                            bestLocalPct = p
+                            bestDx = fdx
+                            bestDy = fdy
+                        }
+                    }
+                }
+                return Triple(bestDx, bestDy, bestLocalPct)
+            }
+
+            if (totalPositions <= 3600L) {
+                var dy = 0
+                while (dy <= maxY) {
+                    var dx = 0
+                    while (dx <= maxX) {
+                        val pct = evaluateAt(dx, dy, if (wantMulti) targetThreshold else maxOf(0f, targetThreshold - 15f))
+                        if (pct > globalBestPct) {
+                            globalBestPct = pct
+                            bestFallbackCenter = Pair(searchRectLeft + dx + tW / 2, searchRectTop + dy + tH / 2)
+                        }
+                        if (pct >= targetThreshold) {
+                            val (rDx, rDy, rPct) = refinePeak(dx, dy, 2)
+                            if (rPct > globalBestPct) globalBestPct = rPct
+                            val cx = searchRectLeft + rDx + tW / 2
+                            val cy = searchRectTop + rDy + tH / 2
+                            if (!wantMulti) {
+                                node.lastFoundCenterX = cx
+                                node.lastFoundCenterY = cy
+                                node.lastFoundCenters = listOf(Pair(cx, cy))
+                                return Pair(true, rPct)
+                            } else {
+                                allCandidates.add(CandidateMatch(cx, cy, rPct, tpl.scaleFactor, tW, tH))
+                                // Skip ahead a few pixels horizontally inside the same object to avoid redundant dense evaluations
+                                dx += maxOf(1, tW / 3)
+                                continue
+                            }
+                        }
+                        dx++
+                    }
+                    dy++
+                }
+            } else {
+                // Fast Anchor-Guided Coarse-to-Fine search for full screen / large zones
+                val scanStep = if (isSmallTemplate) 2 else maxOf(2, minOf(tW, tH) / 4).coerceIn(2, 4)
+                val coarseVerifyThreshold = maxOf(35f, targetThreshold - 22f)
+                var bestCoarseX = 0
+                var bestCoarseY = 0
+                var bestScalePct = 0f
+
+                var dy = 0
+                while (dy <= maxY) {
+                    var dx = 0
+                    while (dx <= maxX) {
+                        if (anchorsPass(dx, dy)) {
+                            val coarsePct = evaluateAt(dx, dy, coarseVerifyThreshold)
+                            if (coarsePct > bestScalePct) {
+                                bestScalePct = coarsePct
+                                bestCoarseX = dx
+                                bestCoarseY = dy
+                            }
+                            if (coarsePct > globalBestPct) {
+                                globalBestPct = coarsePct
+                                bestFallbackCenter = Pair(searchRectLeft + dx + tW / 2, searchRectTop + dy + tH / 2)
+                            }
+                            if (coarsePct >= coarseVerifyThreshold) {
+                                val (rDx, rDy, rPct) = refinePeak(dx, dy, scanStep)
+                                if (rPct > bestScalePct) {
+                                    bestScalePct = rPct
+                                    bestCoarseX = rDx
+                                    bestCoarseY = rDy
+                                }
+                                if (rPct > globalBestPct) {
+                                    globalBestPct = rPct
+                                    bestFallbackCenter = Pair(searchRectLeft + rDx + tW / 2, searchRectTop + rDy + tH / 2)
+                                }
+                                if (rPct >= targetThreshold) {
+                                    val cx = searchRectLeft + rDx + tW / 2
+                                    val cy = searchRectTop + rDy + tH / 2
+                                    if (!wantMulti) {
+                                        node.lastFoundCenterX = cx
+                                        node.lastFoundCenterY = cy
+                                        node.lastFoundCenters = listOf(Pair(cx, cy))
+                                        return Pair(true, rPct)
+                                    } else {
+                                        allCandidates.add(CandidateMatch(cx, cy, rPct, tpl.scaleFactor, tW, tH))
+                                        dx += maxOf(scanStep, tW / 3)
+                                        continue
+                                    }
                                 }
                             }
                         }
+                        dx += scanStep
                     }
-                    dx += coarseStep
+                    dy += scanStep
                 }
-                dy += coarseStep
+
+                // Final fine check around best coarse position for accurate diagnostic % even if below threshold
+                if (bestScalePct > 0f) {
+                    val (rDx, rDy, rPct) = refinePeak(bestCoarseX, bestCoarseY, scanStep)
+                    if (rPct > globalBestPct) {
+                        globalBestPct = rPct
+                        bestFallbackCenter = Pair(searchRectLeft + rDx + tW / 2, searchRectTop + rDy + tH / 2)
+                    }
+                    if (!wantMulti && rPct >= targetThreshold) {
+                        val cx = searchRectLeft + rDx + tW / 2
+                        val cy = searchRectTop + rDy + tH / 2
+                        node.lastFoundCenterX = cx
+                        node.lastFoundCenterY = cy
+                        node.lastFoundCenters = listOf(Pair(cx, cy))
+                        return Pair(true, rPct)
+                    }
+                }
             }
         }
 
-        return Pair(false, bestPct)
+        if (wantMulti && allCandidates.isNotEmpty()) {
+            // Non-Maximum Suppression (NMS) so overlapping detections on the same sprite are merged into the strongest peak
+            val sortedByScore = allCandidates.sortedByDescending { it.pct }
+            val suppressed = mutableListOf<CandidateMatch>()
+            for (cand in sortedByScore) {
+                val minDist = maxOf(8f, minOf(cand.w, cand.h) * 0.65f)
+                val minDistSq = minDist * minDist
+                val overlapsExisting = suppressed.any { kept ->
+                    val ddx = (cand.centerX - kept.centerX).toFloat()
+                    val ddy = (cand.centerY - kept.centerY).toFloat()
+                    (ddx * ddx + ddy * ddy) < minDistSq
+                }
+                if (!overlapsExisting) {
+                    suppressed.add(cand)
+                }
+            }
+
+            // Order targets: either random (anti-detect) or natural reading order (top-to-bottom, left-to-right)
+            val rowBand = maxOf(10, origH / 2)
+            var ordered = if (node.imageMultiRandomOrder) {
+                suppressed.shuffled()
+            } else {
+                suppressed.sortedWith(compareBy({ it.centerY / rowBand }, { it.centerX }))
+            }
+
+            if (node.imageMultiMaxTargets > 0 && ordered.size > node.imageMultiMaxTargets) {
+                ordered = ordered.take(node.imageMultiMaxTargets)
+            }
+
+            node.lastFoundCenters = ordered.map { Pair(it.centerX, it.centerY) }
+            node.lastFoundCenterX = ordered.first().centerX
+            node.lastFoundCenterY = ordered.first().centerY
+            val bestMultiPct = suppressed.maxOf { it.pct }
+            return Pair(true, bestMultiPct)
+        }
+
+        node.lastFoundCenters = emptyList()
+        if (bestFallbackCenter != null && globalBestPct >= targetThreshold) {
+            node.lastFoundCenterX = bestFallbackCenter!!.first
+            node.lastFoundCenterY = bestFallbackCenter!!.second
+            node.lastFoundCenters = listOf(bestFallbackCenter!!)
+            return Pair(true, globalBestPct)
+        }
+
+        return Pair(false, globalBestPct)
     }
 
     private fun compareTwoRegionsInBitmap(node: TargetNode, bitmap: Bitmap): Pair<Boolean, Float> {
@@ -2101,9 +2513,10 @@ class AutoClickService : AccessibilityService() {
             val msg = if (node.compareZoneEnabled) {
                 "Сходство Области 1 и Области 2: ${String.format("%.1f", bestPct)}% (порог ${node.imageThreshold}%, ${dt}мс). Условие (${node.colorOperator}): $finalMatch"
             } else if (found) {
-                "Фрагмент НАЙДЕН (${String.format("%.1f", bestPct)}%) в точке (${node.lastFoundCenterX}, ${node.lastFoundCenterY}) за ${dt}мс. Итог условия: $finalMatch"
+                val multiCount = if (node.imageMultiTarget && node.lastFoundCenters.isNotEmpty()) " [Найдено целей: ${node.lastFoundCenters.size}]" else ""
+                "Фрагмент НАЙДЕН (${String.format("%.1f", bestPct)}%)$multiCount в (${node.lastFoundCenterX}, ${node.lastFoundCenterY}) за ${dt}мс. Итог: $finalMatch"
             } else {
-                "Фрагмент НЕ найден (макс. ${String.format("%.1f", bestPct)}%, порог ${node.imageThreshold}%, время ${dt}мс). Итог условия: $finalMatch"
+                "Фрагмент НЕ найден (макс. ${String.format("%.1f", bestPct)}%, порог ${node.imageThreshold}%, время ${dt}мс). Итог: $finalMatch"
             }
             handler.post {
                 if (::uiManager.isInitialized) uiManager.logDebug("Шаг ${node.id}: [Тест Фрагмента] $msg")

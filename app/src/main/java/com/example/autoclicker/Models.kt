@@ -25,6 +25,13 @@ data class ManagerRoute(
     }
 }
 
+data class ScaledTemplate(
+    val scaleFactor: Float,
+    val w: Int,
+    val h: Int,
+    val pixels: IntArray
+)
+
 data class TargetNode(
     var id: Int,
     var type: NodeType = NodeType.CLICK,
@@ -46,6 +53,13 @@ data class TargetNode(
     var searchRadius: Int = 0,
     var imageClickFoundCenter: Boolean = false,
     var imageFullScreenSearch: Boolean = false,
+    var imageAdaptiveScale: Boolean = false,
+    var imageScaleRangePct: Int = 20,
+    var imageMultiTarget: Boolean = false,
+    var imageMultiRandomOrder: Boolean = false,
+    var imageMultiMaxTargets: Int = 0,
+    var imageMultiClickDelayMs: Long = 120L,
+    var imageMultiRandomDelayMs: Long = 40L,
     var delayAfterMs: Long = 300L,
     var randomizeDelayMs: Long = 0L,
     var randomizeRadius: Int = 0,
@@ -99,8 +113,16 @@ data class TargetNode(
     @Transient var cachedTargetPixels: IntArray? = null
     @Transient var cachedTargetW: Int = 0
     @Transient var cachedTargetH: Int = 0
+    @Transient var cachedScaledTemplates: List<ScaledTemplate>? = null
+    @Transient var cachedAdaptiveScaleRangePct: Int = 0
+    @Transient var cachedAdaptiveScaleEnabled: Boolean = false
     @Transient var lastFoundCenterX: Int? = null
     @Transient var lastFoundCenterY: Int? = null
+    @Transient var lastFoundCenters: List<Pair<Int, Int>> = emptyList()
+        get() {
+            if (field == null) field = emptyList()
+            return field
+        }
     @Transient var colorHistory: java.util.ArrayDeque<Pair<Long, Int>> = java.util.ArrayDeque()
         get() {
             if (field == null) field = java.util.ArrayDeque()
@@ -113,6 +135,9 @@ data class TargetNode(
         cachedTargetPixels = null
         cachedTargetW = 0
         cachedTargetH = 0
+        cachedScaledTemplates = null
+        cachedAdaptiveScaleRangePct = 0
+        cachedAdaptiveScaleEnabled = false
     }
 
     fun colorMatch(otherColor: Int): Boolean {
@@ -148,6 +173,13 @@ data class TargetNode(
         if (searchRadius != 0) obj.put("searchRadius", searchRadius)
         if (imageClickFoundCenter) obj.put("imageClickFoundCenter", imageClickFoundCenter)
         if (imageFullScreenSearch) obj.put("imageFullScreenSearch", imageFullScreenSearch)
+        if (imageAdaptiveScale) obj.put("imageAdaptiveScale", imageAdaptiveScale)
+        if (imageScaleRangePct != 20) obj.put("imageScaleRangePct", imageScaleRangePct)
+        if (imageMultiTarget) obj.put("imageMultiTarget", imageMultiTarget)
+        if (imageMultiRandomOrder) obj.put("imageMultiRandomOrder", imageMultiRandomOrder)
+        if (imageMultiMaxTargets != 0) obj.put("imageMultiMaxTargets", imageMultiMaxTargets)
+        if (imageMultiClickDelayMs != 120L) obj.put("imageMultiClickDelayMs", imageMultiClickDelayMs)
+        if (imageMultiRandomDelayMs != 40L) obj.put("imageMultiRandomDelayMs", imageMultiRandomDelayMs)
         if (delayAfterMs != 300L) obj.put("delayAfterMs", delayAfterMs)
         if (randomizeDelayMs != 0L) obj.put("randomizeDelayMs", randomizeDelayMs)
         if (randomizeRadius != 0) obj.put("randomizeRadius", randomizeRadius)
@@ -270,6 +302,13 @@ data class TargetNode(
                 searchRadius = obj.optInt("searchRadius", 0),
                 imageClickFoundCenter = obj.optBoolean("imageClickFoundCenter", false),
                 imageFullScreenSearch = obj.optBoolean("imageFullScreenSearch", false),
+                imageAdaptiveScale = obj.optBoolean("imageAdaptiveScale", false),
+                imageScaleRangePct = obj.optInt("imageScaleRangePct", 20),
+                imageMultiTarget = obj.optBoolean("imageMultiTarget", false),
+                imageMultiRandomOrder = obj.optBoolean("imageMultiRandomOrder", false),
+                imageMultiMaxTargets = obj.optInt("imageMultiMaxTargets", 0),
+                imageMultiClickDelayMs = obj.optLong("imageMultiClickDelayMs", 120L),
+                imageMultiRandomDelayMs = obj.optLong("imageMultiRandomDelayMs", 40L),
                 delayAfterMs = obj.optLong("delayAfterMs", 300L),
                 randomizeDelayMs = obj.optLong("randomizeDelayMs", 0L),
                 randomizeRadius = obj.optInt("randomizeRadius", 0),

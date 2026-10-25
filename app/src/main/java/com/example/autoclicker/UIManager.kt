@@ -116,6 +116,119 @@ class SubMarkerView(context: Context, val node: TargetNode, val markerType: Int)
     }
 }
 
+class ZoneCornerView(
+    context: Context,
+    val node: TargetNode,
+    val isZone2: Boolean,
+    val isStart: Boolean,
+    var isSelectedCorner: Boolean = false
+) : View(context) {
+    private val density = context.resources.displayMetrics.density
+
+    private val mainColor: Int
+        get() = when {
+            isZone2 && isStart -> Color.parseColor("#00E5FF")
+            isZone2 && !isStart -> Color.parseColor("#448AFF")
+            !isZone2 && isStart -> Color.parseColor("#00E676")
+            else -> Color.parseColor("#FF5252")
+        }
+
+    private val shadowPaint = Paint().apply {
+        style = Paint.Style.STROKE
+        isAntiAlias = true
+        color = Color.parseColor("#CC000000")
+        strokeWidth = 3.2f * density
+        strokeCap = Paint.Cap.ROUND
+    }
+
+    private val crossPaint = Paint().apply {
+        style = Paint.Style.STROKE
+        isAntiAlias = true
+        strokeWidth = 1.6f * density
+        strokeCap = Paint.Cap.ROUND
+    }
+
+    private val bracketPaint = Paint().apply {
+        style = Paint.Style.STROKE
+        isAntiAlias = true
+        strokeWidth = 2.4f * density
+        strokeCap = Paint.Cap.SQUARE
+    }
+
+    private val selectRingPaint = Paint().apply {
+        style = Paint.Style.STROKE
+        isAntiAlias = true
+        color = Color.parseColor("#FFD600")
+        strokeWidth = 1.6f * density
+        pathEffect = android.graphics.DashPathEffect(floatArrayOf(6f * density, 4f * density), 0f)
+    }
+
+    private val badgeBgPaint = Paint().apply {
+        style = Paint.Style.FILL
+        isAntiAlias = true
+        color = Color.parseColor("#D9101824")
+    }
+
+    private val badgeTextPaint = Paint().apply {
+        isAntiAlias = true
+        textSize = 9.5f * density
+        typeface = Typeface.DEFAULT_BOLD
+        textAlign = Paint.Align.CENTER
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        val cx = width / 2f
+        val cy = height / 2f
+        val c = mainColor
+        crossPaint.color = c
+        bracketPaint.color = c
+        badgeTextPaint.color = c
+
+        val gap = 2.5f * density
+        val arm = 11f * density
+
+        // Тёмная подложка под тонкий крестик для идеальной видимости на любом фоне
+        canvas.drawLine(cx - arm, cy, cx - gap, cy, shadowPaint)
+        canvas.drawLine(cx + gap, cy, cx + arm, cy, shadowPaint)
+        canvas.drawLine(cx, cy - arm, cx, cy - gap, shadowPaint)
+        canvas.drawLine(cx, cy + gap, cx, cy + arm, shadowPaint)
+
+        // Тонкий снайперский крестик с прозрачным центром ровно в точке (cx, cy)
+        canvas.drawLine(cx - arm, cy, cx - gap, cy, crossPaint)
+        canvas.drawLine(cx + gap, cy, cx + arm, cy, crossPaint)
+        canvas.drawLine(cx, cy - arm, cx, cy - gap, crossPaint)
+        canvas.drawLine(cx, cy + gap, cx, cy + arm, crossPaint)
+
+        // Г-образный уголок в сторону внутренней части зоны
+        val dirX = if (isStart) 1f else -1f
+        val dirY = if (isStart) 1f else -1f
+        val bLen = 13f * density
+        canvas.drawLine(cx, cy, cx + dirX * bLen, cy, bracketPaint)
+        canvas.drawLine(cx, cy, cx, cy + dirY * bLen, bracketPaint)
+
+        // Подсветка активного угла при работе со стрелочками сдвига
+        if (isSelectedCorner) {
+            canvas.drawCircle(cx, cy, 13.5f * density, selectRingPaint)
+        }
+
+        // Компактный бейдж снаружи угла, чтобы не перекрывать проверяемую область внутри рамки
+        val label = if (isZone2) {
+            if (isStart) "2↖" else "↘2"
+        } else {
+            if (isStart) "1↖" else "↘1"
+        }
+        val badgeOffsetX = -dirX * 9.5f * density
+        val badgeOffsetY = -dirY * 9.5f * density
+        val bx = (cx + badgeOffsetX).coerceIn(8f * density, width - 8f * density)
+        val by = (cy + badgeOffsetY).coerceIn(7f * density, height - 7f * density)
+        val rect = android.graphics.RectF(bx - 7.5f * density, by - 5.5f * density, bx + 7.5f * density, by + 5.5f * density)
+        canvas.drawRoundRect(rect, 3.5f * density, 3.5f * density, badgeBgPaint)
+        val textY = by - (badgeTextPaint.descent() + badgeTextPaint.ascent()) / 2f
+        canvas.drawText(label, bx, textY, badgeTextPaint)
+    }
+}
+
 class UIManager(private val service: AutoClickService) {
     var screenOffsetX = 0
     var screenOffsetY = 0
@@ -130,6 +243,14 @@ class UIManager(private val service: AutoClickService) {
     
     var floatingControlBar: View? = null
     private var linesOverlayView: View? = null
+    private var zoneNudgePopupView: View? = null
+    private var zoneNudgeParams: WindowManager.LayoutParams? = null
+    private var zoneNudgeNodeId: Int? = null
+    private var zoneNudgeIsZone2: Boolean = false
+    // 0 = Угол 1 (Start), 1 = Вся рамка, 2 = Угол 2 (End)
+    private var zoneNudgeCornerMode: Int = 1
+    private var zoneNudgeStepPx: Int = 1
+    private var zoneNudgeSizeTextView: TextView? = null
     private var modMenu: View? = null
     private var modMenuParams: WindowManager.LayoutParams? = null
     var isMenuFullscreen = false
@@ -322,13 +443,19 @@ class UIManager(private val service: AutoClickService) {
     }
 
     fun setNodesTouchable(touchable: Boolean) {
+        if (!touchable) {
+            hideZoneNudgePopup()
+        }
         val lists = listOf(
             nodeViews to nodeParams,
             swipeEndViews to swipeEndParams,
             colorCompareViews to colorCompareParams,
             textZoneStartViews to textZoneStartParams,
-            textZoneEndViews to textZoneEndParams
+            textZoneEndViews to textZoneEndParams,
+            compareZoneStartViews to compareZoneStartParams,
+            compareZoneEndViews to compareZoneEndParams
         )
+        val referencedColorIds = service.nodes.mapNotNull { it.compareToNodeId }.toSet()
         for ((viewsMap, paramsMap) in lists) {
             for ((id, view) in viewsMap) {
                 val params = paramsMap[id] ?: continue
@@ -337,9 +464,23 @@ class UIManager(private val service: AutoClickService) {
                 } else {
                     params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
                 }
-                windowManager.updateViewLayout(view, params)
+                val node = service.nodes.find { it.id == id }
+                if (!touchable) {
+                    // Во время работы макроса скрываем маркеры зон и прицелы проверяемых меток,
+                    // чтобы они не перекрывали маленькие картинки и цвета на скриншотах takeScreenshot
+                    val isZoneOrColorMarker = (viewsMap === textZoneStartViews || viewsMap === textZoneEndViews ||
+                        viewsMap === compareZoneStartViews || viewsMap === compareZoneEndViews || viewsMap === colorCompareViews)
+                    val isVisualCheckNode = (viewsMap === nodeViews && node != null && (node.triggerMode >= 0 || referencedColorIds.contains(node.id)))
+                    if (isZoneOrColorMarker || isVisualCheckNode) {
+                        view.visibility = View.INVISIBLE
+                    }
+                } else if (node != null) {
+                    view.visibility = if (node.isVisible) View.VISIBLE else View.GONE
+                }
+                try { windowManager.updateViewLayout(view, params) } catch (_: Exception) {}
             }
         }
+        invalidateLines()
     }
 
     private fun setMenuFocusable(focusable: Boolean) {
@@ -3600,7 +3741,7 @@ class UIManager(private val service: AutoClickService) {
         triggerModeLayout.apply { addView(triggerModeSpinner) }
 
         val fragZoneBtn = Button(service).apply {
-            text = if (textZoneStartViews.containsKey(node.id)) "Скрыть рамку Зоны 1 (🟢🔴)" else "🔲 Показать рамку Зоны 1 (🟢🔴)"
+            text = if (textZoneStartViews.containsKey(node.id)) "Скрыть рамку Зоны 1 (✚)" else "🔲 Показать рамку Зоны 1 + Стрелки (✚)"
             stylePillButton(this, "#283246", "#3E506B", 8, 12f)
             layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, dpToPx(36)).apply {
                 setMargins(0, dpToPx(4), 0, dpToPx(4))
@@ -3608,16 +3749,17 @@ class UIManager(private val service: AutoClickService) {
             setOnClickListener {
                 if (textZoneStartViews.containsKey(node.id)) {
                     removeTextZoneMarkers(node.id)
-                    text = "🔲 Показать рамку Зоны 1 (🟢🔴)"
+                    text = "🔲 Показать рамку Зоны 1 + Стрелки (✚)"
                 } else {
                     createTextZoneMarkers(node)
-                    text = "Скрыть рамку Зоны 1 (🟢🔴)"
+                    showZoneNudgePopup(node, isZone2 = false, initialCornerMode = 1)
+                    text = "Скрыть рамку Зоны 1 (✚)"
                 }
             }
         }
 
         val compareZoneBtn = Button(service).apply {
-            text = if (compareZoneStartViews.containsKey(node.id)) "Скрыть рамку Зоны 2 (🟦)" else "🟦 Показать рамку Зоны 2 на экране"
+            text = if (compareZoneStartViews.containsKey(node.id)) "Скрыть рамку Зоны 2 (✚)" else "🟦 Показать рамку Зоны 2 + Стрелки (✚)"
             stylePillButton(this, "#006064", "#00ACC1", 8, 12f)
             visibility = if (node.compareZoneEnabled) View.VISIBLE else View.GONE
             layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, dpToPx(36)).apply {
@@ -3626,10 +3768,11 @@ class UIManager(private val service: AutoClickService) {
             setOnClickListener {
                 if (compareZoneStartViews.containsKey(node.id)) {
                     removeCompareZoneMarkers(node.id)
-                    text = "🟦 Показать рамку Зоны 2 на экране"
+                    text = "🟦 Показать рамку Зоны 2 + Стрелки (✚)"
                 } else {
                     createCompareZoneMarkers(node)
-                    text = "Скрыть рамку Зоны 2 (🟦)"
+                    showZoneNudgePopup(node, isZone2 = true, initialCornerMode = 1)
+                    text = "Скрыть рамку Зоны 2 (✚)"
                 }
             }
         }
@@ -3644,7 +3787,8 @@ class UIManager(private val service: AutoClickService) {
                 compareZoneBtn.visibility = if (isChecked) View.VISIBLE else View.GONE
                 if (isChecked && !compareZoneStartViews.containsKey(node.id)) {
                     createCompareZoneMarkers(node)
-                    compareZoneBtn.text = "Скрыть рамку Зоны 2 (🟦)"
+                    showZoneNudgePopup(node, isZone2 = true, initialCornerMode = 1)
+                    compareZoneBtn.text = "Скрыть рамку Зоны 2 (✚)"
                 } else if (!isChecked) {
                     removeCompareZoneMarkers(node.id)
                 }
@@ -3751,7 +3895,7 @@ class UIManager(private val service: AutoClickService) {
                     compareZoneBtn.visibility = if (isRegion2) View.VISIBLE else View.GONE
                     if (isRegion2 && !compareZoneStartViews.containsKey(node.id)) {
                         createCompareZoneMarkers(node)
-                        compareZoneBtn.text = "Скрыть рамку Зоны 2 (🟦)"
+                        compareZoneBtn.text = "Скрыть рамку Зоны 2 (✚)"
                     }
                 }
             }
@@ -3988,6 +4132,7 @@ class UIManager(private val service: AutoClickService) {
                 updateNodeScreenPosition(node)
                 modMenu?.visibility = View.INVISIBLE
                 linesOverlayView?.visibility = View.INVISIBLE
+                zoneNudgePopupView?.visibility = View.INVISIBLE
                 textZoneStartViews.values.forEach { it.visibility = View.INVISIBLE }
                 textZoneEndViews.values.forEach { it.visibility = View.INVISIBLE }
                 compareZoneStartViews.values.forEach { it.visibility = View.INVISIBLE }
@@ -3998,13 +4143,14 @@ class UIManager(private val service: AutoClickService) {
                 service.handler.postDelayed({
                     service.captureColorAt(node.x, node.y) { color ->
                         modMenu?.visibility = View.VISIBLE
-                        linesOverlayView?.visibility = View.VISIBLE
+                        zoneNudgePopupView?.visibility = View.VISIBLE
                         textZoneStartViews.values.forEach { it.visibility = View.VISIBLE }
                         textZoneEndViews.values.forEach { it.visibility = View.VISIBLE }
                         compareZoneStartViews.values.forEach { it.visibility = View.VISIBLE }
                         compareZoneEndViews.values.forEach { it.visibility = View.VISIBLE }
                         colorCompareViews.values.forEach { it.visibility = View.VISIBLE }
                         nodeViews.values.forEach { it.visibility = View.VISIBLE }
+                        invalidateLines()
 
                         if (color != null) {
                             node.targetColor = color
@@ -4139,7 +4285,7 @@ class UIManager(private val service: AutoClickService) {
                         bitmap = service.enhanceBitmapForOcr(bitmap)
                     } else if (node.triggerMode == 1 && currentScale < 1.0f) {
                         val checkStep = (1f / currentScale).toInt().coerceAtLeast(1)
-                        if (checkStep > 1) {
+                        if (checkStep > 1 && bitmap.width * bitmap.height > 3600 && minOf(bitmap.width, bitmap.height) > 48) {
                             val sw = maxOf(1, bitmap.width / checkStep)
                             val sh = maxOf(1, bitmap.height / checkStep)
                             bitmap = android.graphics.Bitmap.createScaledBitmap(bitmap, sw, sh, false)
@@ -4183,6 +4329,143 @@ class UIManager(private val service: AutoClickService) {
             }
         }
 
+        val adaptiveScaleSettingsLayout = LinearLayout(service).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dpToPx(12), dpToPx(2), dpToPx(4), dpToPx(6))
+            visibility = if (node.imageAdaptiveScale) View.VISIBLE else View.GONE
+        }
+        adaptiveScaleSettingsLayout.addView(TextView(service).apply {
+            text = "Отклонение размера (±%, 5–50):"
+            setTextColor(Color.parseColor("#B0BEC5"))
+            setScaledTextSize(12f)
+            layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        val imageScaleRangeEdit = EditText(service).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER
+            setText(node.imageScaleRangePct.toString())
+            setTextColor(Color.WHITE)
+            setScaledTextSize(12.5f)
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(dpToPx(75), WindowManager.LayoutParams.WRAP_CONTENT)
+        }
+        adaptiveScaleSettingsLayout.addView(imageScaleRangeEdit)
+
+        val imageAdaptiveScaleCheck = android.widget.CheckBox(service).apply {
+            text = "🔍 Адаптивный масштаб (если спрайт больше/меньше)"
+            setTextColor(Color.parseColor("#81D4FA"))
+            isChecked = node.imageAdaptiveScale
+            setOnCheckedChangeListener { _, isChecked ->
+                node.imageAdaptiveScale = isChecked
+                adaptiveScaleSettingsLayout.visibility = if (isChecked) View.VISIBLE else View.GONE
+            }
+        }
+
+        val multiTargetSettingsLayout = LinearLayout(service).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dpToPx(10), dpToPx(6), dpToPx(10), dpToPx(6))
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.parseColor("#1D2432"))
+                cornerRadius = dpToPx(8).toFloat()
+                setStroke(dpToPx(1), Color.parseColor("#2E3B4E"))
+            }
+            layoutParams = LinearLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(0, dpToPx(2), 0, dpToPx(6))
+            }
+            visibility = if (node.imageMultiTarget) View.VISIBLE else View.GONE
+        }
+
+        val imageMultiRandomOrderCheck = android.widget.CheckBox(service).apply {
+            text = "🎲 Нажимать в случайном порядке (анти-детект)"
+            setTextColor(Color.parseColor("#CE93D8"))
+            setScaledTextSize(12f)
+            isChecked = node.imageMultiRandomOrder
+            setOnCheckedChangeListener { _, isChecked ->
+                node.imageMultiRandomOrder = isChecked
+            }
+        }
+        multiTargetSettingsLayout.addView(imageMultiRandomOrderCheck)
+
+        val multiMaxRow = LinearLayout(service).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dpToPx(2), 0, dpToPx(2))
+        }
+        multiMaxRow.addView(TextView(service).apply {
+            text = "Макс. целей за раз (0 = все):"
+            setTextColor(Color.parseColor("#B0BEC5"))
+            setScaledTextSize(12f)
+            layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        val imageMultiMaxTargetsEdit = EditText(service).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER
+            setText(node.imageMultiMaxTargets.toString())
+            setTextColor(Color.WHITE)
+            setScaledTextSize(12f)
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(dpToPx(75), WindowManager.LayoutParams.WRAP_CONTENT)
+        }
+        multiMaxRow.addView(imageMultiMaxTargetsEdit)
+        multiTargetSettingsLayout.addView(multiMaxRow)
+
+        val multiDelayRow = LinearLayout(service).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dpToPx(2), 0, dpToPx(2))
+        }
+        multiDelayRow.addView(TextView(service).apply {
+            text = "Пауза между целями (мс):"
+            setTextColor(Color.parseColor("#B0BEC5"))
+            setScaledTextSize(12f)
+            layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        val imageMultiClickDelayEdit = EditText(service).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER
+            setText(node.imageMultiClickDelayMs.toString())
+            setTextColor(Color.WHITE)
+            setScaledTextSize(12f)
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(dpToPx(75), WindowManager.LayoutParams.WRAP_CONTENT)
+        }
+        multiDelayRow.addView(imageMultiClickDelayEdit)
+        multiTargetSettingsLayout.addView(multiDelayRow)
+
+        val multiRandDelayRow = LinearLayout(service).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dpToPx(2), 0, dpToPx(2))
+        }
+        multiRandDelayRow.addView(TextView(service).apply {
+            text = "Разброс паузы (+мс, анти-детект):"
+            setTextColor(Color.parseColor("#B0BEC5"))
+            setScaledTextSize(12f)
+            layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        val imageMultiRandomDelayEdit = EditText(service).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER
+            setText(node.imageMultiRandomDelayMs.toString())
+            setTextColor(Color.WHITE)
+            setScaledTextSize(12f)
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(dpToPx(75), WindowManager.LayoutParams.WRAP_CONTENT)
+        }
+        multiRandDelayRow.addView(imageMultiRandomDelayEdit)
+        multiTargetSettingsLayout.addView(multiRandDelayRow)
+
+        val imageMultiTargetCheck = android.widget.CheckBox(service).apply {
+            text = "🎯 Несколько одинаковых целей (нажать все)"
+            setTextColor(Color.parseColor("#69F0AE"))
+            isChecked = node.imageMultiTarget
+            setOnCheckedChangeListener { _, isChecked ->
+                node.imageMultiTarget = isChecked
+                multiTargetSettingsLayout.visibility = if (isChecked) View.VISIBLE else View.GONE
+                if (isChecked && !imageClickFoundCenterCheck.isChecked) {
+                    imageClickFoundCenterCheck.isChecked = true
+                    node.imageClickFoundCenter = true
+                }
+            }
+        }
+
         val capImgBtn = Button(service).apply {
             text = if (node.triggerMode == 1) "📸 Захватить образец с экрана (удерж. = сброс)" else "🔍 Проверить распознавание текста"
             stylePillButton(this, "#1976D2", null, 8, 12f)
@@ -4212,10 +4495,11 @@ class UIManager(private val service: AutoClickService) {
                 }
                 if (node.textZoneStartX == 0 && node.textZoneStartY == 0 && node.textZoneEndX == 0 && node.textZoneEndY == 0) {
                     createTextZoneMarkers(node)
-                    fragZoneBtn.text = "Скрыть рамку Зоны 1 (🟢🔴)"
+                    fragZoneBtn.text = "Скрыть рамку Зоны 1 (✚)"
                 }
                 modMenu?.visibility = View.INVISIBLE
                 linesOverlayView?.visibility = View.INVISIBLE
+                zoneNudgePopupView?.visibility = View.INVISIBLE
                 textZoneStartViews.values.forEach { it.visibility = View.INVISIBLE }
                 textZoneEndViews.values.forEach { it.visibility = View.INVISIBLE }
                 compareZoneStartViews.values.forEach { it.visibility = View.INVISIBLE }
@@ -4226,13 +4510,14 @@ class UIManager(private val service: AutoClickService) {
                 service.handler.postDelayed({
                     service.captureImageFragment(node) { base64 ->
                         modMenu?.visibility = View.VISIBLE
-                        linesOverlayView?.visibility = View.VISIBLE
+                        zoneNudgePopupView?.visibility = View.VISIBLE
                         textZoneStartViews.values.forEach { it.visibility = View.VISIBLE }
                         textZoneEndViews.values.forEach { it.visibility = View.VISIBLE }
                         compareZoneStartViews.values.forEach { it.visibility = View.VISIBLE }
                         compareZoneEndViews.values.forEach { it.visibility = View.VISIBLE }
                         colorCompareViews.values.forEach { it.visibility = View.VISIBLE }
                         nodeViews.values.forEach { it.visibility = View.VISIBLE }
+                        invalidateLines()
                         
                         if (base64 != null) {
                             try {
@@ -4293,6 +4578,13 @@ class UIManager(private val service: AutoClickService) {
                 node.checkResolutionScale = (resolutionScaleBar.progress + 10) / 100f
                 node.imageFullScreenSearch = imageFullScreenSearchCheck.isChecked
                 node.imageClickFoundCenter = imageClickFoundCenterCheck.isChecked
+                node.imageAdaptiveScale = imageAdaptiveScaleCheck.isChecked
+                node.imageScaleRangePct = (imageScaleRangeEdit.text.toString().toIntOrNull() ?: 20).coerceIn(5, 50)
+                node.imageMultiTarget = imageMultiTargetCheck.isChecked
+                node.imageMultiRandomOrder = imageMultiRandomOrderCheck.isChecked
+                node.imageMultiMaxTargets = (imageMultiMaxTargetsEdit.text.toString().toIntOrNull() ?: 0).coerceAtLeast(0)
+                node.imageMultiClickDelayMs = (imageMultiClickDelayEdit.text.toString().toLongOrNull() ?: 120L).coerceAtLeast(0L)
+                node.imageMultiRandomDelayMs = (imageMultiRandomDelayEdit.text.toString().toLongOrNull() ?: 40L).coerceAtLeast(0L)
                 node.compareZoneEnabled = compareTwoRegionsCheck.isChecked
 
                 modMenu?.visibility = View.INVISIBLE
@@ -4526,6 +4818,10 @@ class UIManager(private val service: AutoClickService) {
                 body.addView(compareZoneBtn)
                 body.addView(imageFullScreenSearchCheck)
                 body.addView(imageClickFoundCenterCheck)
+                body.addView(imageAdaptiveScaleCheck)
+                body.addView(adaptiveScaleSettingsLayout)
+                body.addView(imageMultiTargetCheck)
+                body.addView(multiTargetSettingsLayout)
                 body.addView(imgThresholdLayout)
                 body.addView(searchRadiusLayout)
                 body.addView(resolutionScaleLayout)
@@ -4730,6 +5026,13 @@ class UIManager(private val service: AutoClickService) {
             node.checkResolutionScale = (resolutionScaleBar.progress + 10) / 100f
             node.imageFullScreenSearch = imageFullScreenSearchCheck.isChecked
             node.imageClickFoundCenter = imageClickFoundCenterCheck.isChecked
+            node.imageAdaptiveScale = imageAdaptiveScaleCheck.isChecked
+            node.imageScaleRangePct = (imageScaleRangeEdit.text.toString().toIntOrNull() ?: 20).coerceIn(5, 50)
+            node.imageMultiTarget = imageMultiTargetCheck.isChecked
+            node.imageMultiRandomOrder = imageMultiRandomOrderCheck.isChecked
+            node.imageMultiMaxTargets = (imageMultiMaxTargetsEdit.text.toString().toIntOrNull() ?: 0).coerceAtLeast(0)
+            node.imageMultiClickDelayMs = (imageMultiClickDelayEdit.text.toString().toLongOrNull() ?: 120L).coerceAtLeast(0L)
+            node.imageMultiRandomDelayMs = (imageMultiRandomDelayEdit.text.toString().toLongOrNull() ?: 40L).coerceAtLeast(0L)
             node.targetText = textTargetEdit.text.toString().takeIf { it.isNotEmpty() }
             node.targetLanguage = if (textLangSpinner.selectedItemPosition == 1) "eng" else if (textLangSpinner.selectedItemPosition == 2) "rus+eng" else "rus"
             node.ocrFullScreenClick = ocrFullscreenCheck.isChecked
@@ -4823,77 +5126,44 @@ class UIManager(private val service: AutoClickService) {
             node.compareZoneEndY = node.y + dpToPx(135)
         }
 
-        // --- Start Marker (Zone 2) ---
-        val startView = FrameLayout(service)
-        val startCircle = android.view.View(service).apply {
-            background = android.graphics.drawable.GradientDrawable().apply {
-                shape = android.graphics.drawable.GradientDrawable.OVAL
-                setColor(Color.parseColor("#00E5FF"))
-                setSize(dpToPx(30), dpToPx(30))
-            }
-            alpha = 0.85f
-        }
-        val startNumber = TextView(service).apply {
-            text = "⌜2"
-            setTextColor(Color.BLACK)
-            setTypeface(null, Typeface.BOLD)
-            textSize = 13f * uiScale
-            gravity = Gravity.CENTER
-        }
-        startView.addView(startCircle, FrameLayout.LayoutParams(dpToPx(30), dpToPx(30)))
-        startView.addView(startNumber, FrameLayout.LayoutParams(dpToPx(30), dpToPx(30)))
+        val markerSize = dpToPx(36)
+        val half = dpToPx(18)
 
+        // --- Start Marker (Zone 2) ---
+        val startView = ZoneCornerView(service, node, isZone2 = true, isStart = true)
         val startParams = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT,
+            markerSize,
+            markerSize,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = node.compareZoneStartX - dpToPx(15)
-            y = node.compareZoneStartY - dpToPx(15)
+            x = node.compareZoneStartX - half
+            y = node.compareZoneStartY - half
         }
 
-        startView.visibility = if (node.isVisible) View.VISIBLE else View.GONE
+        startView.visibility = if (node.isVisible && !service.isPlaying) View.VISIBLE else View.GONE
         setupCompareZoneTouchListener(startView, startParams, node, true)
         windowManager.addView(startView, startParams)
         compareZoneStartViews[node.id] = startView
         compareZoneStartParams[node.id] = startParams
 
         // --- End Marker (Zone 2) ---
-        val endView = FrameLayout(service)
-        val endCircle = android.view.View(service).apply {
-            background = android.graphics.drawable.GradientDrawable().apply {
-                shape = android.graphics.drawable.GradientDrawable.OVAL
-                setColor(Color.parseColor("#2979FF"))
-                setSize(dpToPx(30), dpToPx(30))
-            }
-            alpha = 0.85f
-        }
-        val endNumber = TextView(service).apply {
-            text = "2⌟"
-            setTextColor(Color.WHITE)
-            setTypeface(null, Typeface.BOLD)
-            textSize = 13f * uiScale
-            gravity = Gravity.CENTER
-        }
-        endView.addView(endCircle, FrameLayout.LayoutParams(dpToPx(30), dpToPx(30)))
-        endView.addView(endNumber, FrameLayout.LayoutParams(dpToPx(30), dpToPx(30)))
-
+        val endView = ZoneCornerView(service, node, isZone2 = true, isStart = false)
         val endParams = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT,
+            markerSize,
+            markerSize,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = node.compareZoneEndX - dpToPx(15)
-            y = node.compareZoneEndY - dpToPx(15)
+            x = node.compareZoneEndX - half
+            y = node.compareZoneEndY - half
         }
 
-        endView.visibility = if (node.isVisible) View.VISIBLE else View.GONE
+        endView.visibility = if (node.isVisible && !service.isPlaying) View.VISIBLE else View.GONE
         setupCompareZoneTouchListener(endView, endParams, node, false)
         windowManager.addView(endView, endParams)
         compareZoneEndViews[node.id] = endView
@@ -4909,6 +5179,9 @@ class UIManager(private val service: AutoClickService) {
         val endV = compareZoneEndViews.remove(id)
         if (endV != null) try { windowManager.removeView(endV) } catch (_: Exception) {}
         compareZoneEndParams.remove(id)
+        if (zoneNudgeNodeId == id && zoneNudgeIsZone2) {
+            hideZoneNudgePopup()
+        }
         invalidateLines()
     }
 
@@ -4930,7 +5203,7 @@ class UIManager(private val service: AutoClickService) {
                 }
                 MotionEvent.ACTION_MOVE -> {
                     val (screenWidth, screenHeight) = getScreenDimensions()
-                    val half = dpToPx(15)
+                    val half = dpToPx(18)
                     var targetX = initialX + half + (event.rawX - initialTouchX).toInt()
                     var targetY = initialY + half + (event.rawY - initialTouchY).toInt()
                     targetX = targetX.coerceIn(0, screenWidth)
@@ -4945,11 +5218,12 @@ class UIManager(private val service: AutoClickService) {
                         node.compareZoneEndX = targetX
                         node.compareZoneEndY = targetY
                     }
+                    updateZoneNudgePopupPosition(node, isZone2 = true)
                     invalidateLines()
                     true
                 }
                 MotionEvent.ACTION_UP -> {
-                    val half = dpToPx(15)
+                    val half = dpToPx(18)
                     val targetX = (params.x + half).coerceIn(0, getScreenDimensions().first)
                     val targetY = (params.y + half).coerceIn(0, getScreenDimensions().second)
                     if (isStart) {
@@ -4958,6 +5232,13 @@ class UIManager(private val service: AutoClickService) {
                     } else {
                         node.compareZoneEndX = targetX
                         node.compareZoneEndY = targetY
+                    }
+                    val movedDist = Math.abs(event.rawX - initialTouchX) + Math.abs(event.rawY - initialTouchY)
+                    if (movedDist < dpToPx(10)) {
+                        // Тап по маркеру открывает стрелочки точечного сдвига прямо над рамкой
+                        showZoneNudgePopup(node, isZone2 = true, initialCornerMode = if (isStart) 0 else 2)
+                    } else {
+                        updateZoneNudgePopupPosition(node, isZone2 = true)
                     }
                     invalidateLines()
                     service.autoSave()
@@ -4978,91 +5259,63 @@ class UIManager(private val service: AutoClickService) {
             node.textZoneEndY = node.y + dpToPx(50)
         }
 
-        // --- Start Marker ---
-        val startView = FrameLayout(service)
-        val startCircle = android.view.View(service).apply {
-            background = android.graphics.drawable.GradientDrawable().apply {
-                shape = android.graphics.drawable.GradientDrawable.OVAL
-                setColor(Color.GREEN)
-                setSize(dpToPx(30), dpToPx(30))
-            }
-            alpha = 0.8f
-        }
-        val startNumber = TextView(service).apply {
-            text = "⌜"
-            setTextColor(Color.WHITE)
-            textSize = 24f * uiScale
-            gravity = Gravity.CENTER
-            setShadowLayer(2f, 1f, 1f, Color.BLACK)
-        }
-        startView.addView(startCircle, FrameLayout.LayoutParams(dpToPx(30), dpToPx(30)))
-        startView.addView(startNumber, FrameLayout.LayoutParams(dpToPx(30), dpToPx(30)))
+        val markerSize = dpToPx(36)
+        val half = dpToPx(18)
 
+        // --- Start Marker (Zone 1) ---
+        val startView = ZoneCornerView(service, node, isZone2 = false, isStart = true)
         val startParams = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT,
+            markerSize,
+            markerSize,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = node.textZoneStartX - dpToPx(15)
-            y = node.textZoneStartY - dpToPx(15)
+            x = node.textZoneStartX - half
+            y = node.textZoneStartY - half
         }
 
-        startView.visibility = if (node.isVisible) View.VISIBLE else View.GONE
+        startView.visibility = if (node.isVisible && !service.isPlaying) View.VISIBLE else View.GONE
         setupTextZoneTouchListener(startView, startParams, node, true)
         windowManager.addView(startView, startParams)
         textZoneStartViews[node.id] = startView
         textZoneStartParams[node.id] = startParams
 
-        // --- End Marker ---
-        val endView = FrameLayout(service)
-        val endCircle = android.view.View(service).apply {
-            background = android.graphics.drawable.GradientDrawable().apply {
-                shape = android.graphics.drawable.GradientDrawable.OVAL
-                setColor(Color.RED)
-                setSize(dpToPx(30), dpToPx(30))
-            }
-            alpha = 0.8f
-        }
-        val endNumber = TextView(service).apply {
-            text = "⌟"
-            setTextColor(Color.WHITE)
-            textSize = 24f * uiScale
-            gravity = Gravity.CENTER
-            setShadowLayer(2f, 1f, 1f, Color.BLACK)
-        }
-        endView.addView(endCircle, FrameLayout.LayoutParams(dpToPx(30), dpToPx(30)))
-        endView.addView(endNumber, FrameLayout.LayoutParams(dpToPx(30), dpToPx(30)))
-
+        // --- End Marker (Zone 1) ---
+        val endView = ZoneCornerView(service, node, isZone2 = false, isStart = false)
         val endParams = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT,
+            markerSize,
+            markerSize,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = node.textZoneEndX - dpToPx(15)
-            y = node.textZoneEndY - dpToPx(15)
+            x = node.textZoneEndX - half
+            y = node.textZoneEndY - half
         }
 
-        endView.visibility = if (node.isVisible) View.VISIBLE else View.GONE
+        endView.visibility = if (node.isVisible && !service.isPlaying) View.VISIBLE else View.GONE
         setupTextZoneTouchListener(endView, endParams, node, false)
         windowManager.addView(endView, endParams)
         textZoneEndViews[node.id] = endView
         textZoneEndParams[node.id] = endParams
+        invalidateLines()
     }
 
     fun removeTextZoneMarkers(id: Int) {
         val startV = textZoneStartViews.remove(id)
-        if (startV != null) windowManager.removeView(startV)
+        if (startV != null) try { windowManager.removeView(startV) } catch (_: Exception) {}
         textZoneStartParams.remove(id)
 
         val endV = textZoneEndViews.remove(id)
-        if (endV != null) windowManager.removeView(endV)
+        if (endV != null) try { windowManager.removeView(endV) } catch (_: Exception) {}
         textZoneEndParams.remove(id)
+        if (zoneNudgeNodeId == id && !zoneNudgeIsZone2) {
+            hideZoneNudgePopup()
+        }
+        invalidateLines()
     }
 
     fun setupTextZoneTouchListener(view: View, params: WindowManager.LayoutParams, node: TargetNode, isStart: Boolean) {
@@ -5083,7 +5336,7 @@ class UIManager(private val service: AutoClickService) {
                 }
                 MotionEvent.ACTION_MOVE -> {
                     val (screenWidth, screenHeight) = getScreenDimensions()
-                    val half = dpToPx(15)
+                    val half = dpToPx(18)
                     var targetX = initialX + half + (event.rawX - initialTouchX).toInt()
                     var targetY = initialY + half + (event.rawY - initialTouchY).toInt()
                     targetX = targetX.coerceIn(0, screenWidth)
@@ -5098,11 +5351,12 @@ class UIManager(private val service: AutoClickService) {
                         node.textZoneEndX = targetX
                         node.textZoneEndY = targetY
                     }
+                    updateZoneNudgePopupPosition(node, isZone2 = false)
                     invalidateLines()
                     true
                 }
                 MotionEvent.ACTION_UP -> {
-                    val half = dpToPx(15)
+                    val half = dpToPx(18)
                     val targetX = (params.x + half).coerceIn(0, getScreenDimensions().first)
                     val targetY = (params.y + half).coerceIn(0, getScreenDimensions().second)
                     if (isStart) {
@@ -5112,6 +5366,13 @@ class UIManager(private val service: AutoClickService) {
                         node.textZoneEndX = targetX
                         node.textZoneEndY = targetY
                     }
+                    val movedDist = Math.abs(event.rawX - initialTouchX) + Math.abs(event.rawY - initialTouchY)
+                    if (movedDist < dpToPx(10)) {
+                        // Тап по маркеру открывает стрелочки точечного сдвига прямо над рамкой
+                        showZoneNudgePopup(node, isZone2 = false, initialCornerMode = if (isStart) 0 else 2)
+                    } else {
+                        updateZoneNudgePopupPosition(node, isZone2 = false)
+                    }
                     invalidateLines()
                     service.autoSave()
                     true
@@ -5119,6 +5380,306 @@ class UIManager(private val service: AutoClickService) {
                 else -> false
             }
         }
+    }
+
+    private fun refreshZoneCornerSelectionHighlights() {
+        textZoneStartViews.forEach { (id, v) ->
+            (v as? ZoneCornerView)?.apply {
+                isSelectedCorner = (zoneNudgePopupView != null && zoneNudgeNodeId == id && !zoneNudgeIsZone2 && (zoneNudgeCornerMode == 0 || zoneNudgeCornerMode == 1))
+                invalidate()
+            }
+        }
+        textZoneEndViews.forEach { (id, v) ->
+            (v as? ZoneCornerView)?.apply {
+                isSelectedCorner = (zoneNudgePopupView != null && zoneNudgeNodeId == id && !zoneNudgeIsZone2 && (zoneNudgeCornerMode == 2 || zoneNudgeCornerMode == 1))
+                invalidate()
+            }
+        }
+        compareZoneStartViews.forEach { (id, v) ->
+            (v as? ZoneCornerView)?.apply {
+                isSelectedCorner = (zoneNudgePopupView != null && zoneNudgeNodeId == id && zoneNudgeIsZone2 && (zoneNudgeCornerMode == 0 || zoneNudgeCornerMode == 1))
+                invalidate()
+            }
+        }
+        compareZoneEndViews.forEach { (id, v) ->
+            (v as? ZoneCornerView)?.apply {
+                isSelectedCorner = (zoneNudgePopupView != null && zoneNudgeNodeId == id && zoneNudgeIsZone2 && (zoneNudgeCornerMode == 2 || zoneNudgeCornerMode == 1))
+                invalidate()
+            }
+        }
+    }
+
+    fun hideZoneNudgePopup() {
+        zoneNudgePopupView?.let {
+            try { windowManager.removeView(it) } catch (_: Exception) {}
+        }
+        zoneNudgePopupView = null
+        zoneNudgeParams = null
+        zoneNudgeNodeId = null
+        zoneNudgeSizeTextView = null
+        refreshZoneCornerSelectionHighlights()
+    }
+
+    private fun syncZoneMarkerPositions(node: TargetNode, isZone2: Boolean) {
+        val half = dpToPx(18)
+        if (isZone2) {
+            val sv = compareZoneStartViews[node.id]
+            val sp = compareZoneStartParams[node.id]
+            if (sv != null && sp != null) {
+                sp.x = node.compareZoneStartX - half
+                sp.y = node.compareZoneStartY - half
+                try { windowManager.updateViewLayout(sv, sp) } catch (_: Exception) {}
+            }
+            val ev = compareZoneEndViews[node.id]
+            val ep = compareZoneEndParams[node.id]
+            if (ev != null && ep != null) {
+                ep.x = node.compareZoneEndX - half
+                ep.y = node.compareZoneEndY - half
+                try { windowManager.updateViewLayout(ev, ep) } catch (_: Exception) {}
+            }
+        } else {
+            val sv = textZoneStartViews[node.id]
+            val sp = textZoneStartParams[node.id]
+            if (sv != null && sp != null) {
+                sp.x = node.textZoneStartX - half
+                sp.y = node.textZoneStartY - half
+                try { windowManager.updateViewLayout(sv, sp) } catch (_: Exception) {}
+            }
+            val ev = textZoneEndViews[node.id]
+            val ep = textZoneEndParams[node.id]
+            if (ev != null && ep != null) {
+                ep.x = node.textZoneEndX - half
+                ep.y = node.textZoneEndY - half
+                try { windowManager.updateViewLayout(ev, ep) } catch (_: Exception) {}
+            }
+        }
+    }
+
+    private fun updateZoneNudgePopupPosition(node: TargetNode, isZone2: Boolean) {
+        if (zoneNudgePopupView == null || zoneNudgeNodeId != node.id || zoneNudgeIsZone2 != isZone2) return
+        val params = zoneNudgeParams ?: return
+        val (screenW, screenH) = getScreenDimensions()
+        val sx = if (isZone2) node.compareZoneStartX else node.textZoneStartX
+        val sy = if (isZone2) node.compareZoneStartY else node.textZoneStartY
+        val ex = if (isZone2) node.compareZoneEndX else node.textZoneEndX
+        val ey = if (isZone2) node.compareZoneEndY else node.textZoneEndY
+
+        val left = minOf(sx, ex)
+        val top = minOf(sy, ey)
+        val right = maxOf(sx, ex)
+        val bottom = maxOf(sy, ey)
+        val w = (right - left).coerceAtLeast(0)
+        val h = (bottom - top).coerceAtLeast(0)
+
+        zoneNudgeSizeTextView?.text = "Зона ${if (isZone2) 2 else 1}: ${w}×${h} px"
+
+        val popupW = dpToPx(246)
+        val popupH = dpToPx(74)
+        val centerX = (left + right) / 2
+        params.x = (centerX - popupW / 2).coerceIn(dpToPx(6), (screenW - popupW - dpToPx(6)).coerceAtLeast(dpToPx(6)))
+        val aboveY = top - popupH - dpToPx(20)
+        params.y = if (aboveY >= dpToPx(24)) {
+            aboveY
+        } else {
+            (bottom + dpToPx(22)).coerceAtMost((screenH - popupH - dpToPx(8)).coerceAtLeast(dpToPx(24)))
+        }
+        try { windowManager.updateViewLayout(zoneNudgePopupView, params) } catch (_: Exception) {}
+    }
+
+    fun showZoneNudgePopup(node: TargetNode, isZone2: Boolean, initialCornerMode: Int = 1) {
+        hideZoneNudgePopup()
+        zoneNudgeNodeId = node.id
+        zoneNudgeIsZone2 = isZone2
+        zoneNudgeCornerMode = initialCornerMode
+
+        val container = LinearLayout(service).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dpToPx(8), dpToPx(6), dpToPx(8), dpToPx(6))
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.parseColor("#EC101722"))
+                cornerRadius = dpToPx(12).toFloat()
+                setStroke(dpToPx(1), if (isZone2) Color.parseColor("#00E5FF") else Color.parseColor("#00E676"))
+            }
+        }
+
+        // Верхняя строка: выбор угла / всей рамки + размер + закрыть
+        val topRow = LinearLayout(service).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, 0, dpToPx(4))
+        }
+
+        lateinit var modeBtn0: Button
+        lateinit var modeBtn1: Button
+        lateinit var modeBtn2: Button
+
+        fun updateModeButtonsStyle() {
+            val activeBg = if (isZone2) "#00838F" else "#1B5E20"
+            val activeStroke = if (isZone2) "#00E5FF" else "#00E676"
+            stylePillButton(modeBtn0, if (zoneNudgeCornerMode == 0) activeBg else "#1E293B", if (zoneNudgeCornerMode == 0) activeStroke else null, 6, 10f)
+            stylePillButton(modeBtn1, if (zoneNudgeCornerMode == 1) activeBg else "#1E293B", if (zoneNudgeCornerMode == 1) activeStroke else null, 6, 10f)
+            stylePillButton(modeBtn2, if (zoneNudgeCornerMode == 2) activeBg else "#1E293B", if (zoneNudgeCornerMode == 2) activeStroke else null, 6, 10f)
+            refreshZoneCornerSelectionHighlights()
+        }
+
+        modeBtn0 = Button(service).apply {
+            text = "↖ Угол 1"
+            setPadding(dpToPx(6), 0, dpToPx(6), 0)
+            layoutParams = LinearLayout.LayoutParams(0, dpToPx(24), 1f).apply { setMargins(0, 0, dpToPx(3), 0) }
+            setOnClickListener {
+                zoneNudgeCornerMode = 0
+                updateModeButtonsStyle()
+            }
+        }
+        modeBtn1 = Button(service).apply {
+            text = "✥ Вся"
+            setPadding(dpToPx(6), 0, dpToPx(6), 0)
+            layoutParams = LinearLayout.LayoutParams(0, dpToPx(24), 0.9f).apply { setMargins(0, 0, dpToPx(3), 0) }
+            setOnClickListener {
+                zoneNudgeCornerMode = 1
+                updateModeButtonsStyle()
+            }
+        }
+        modeBtn2 = Button(service).apply {
+            text = "↘ Угол 2"
+            setPadding(dpToPx(6), 0, dpToPx(6), 0)
+            layoutParams = LinearLayout.LayoutParams(0, dpToPx(24), 1f).apply { setMargins(0, 0, dpToPx(4), 0) }
+            setOnClickListener {
+                zoneNudgeCornerMode = 2
+                updateModeButtonsStyle()
+            }
+        }
+
+        val closeBtn = Button(service).apply {
+            text = "✕"
+            stylePillButton(this, "#3B1E22", null, 6, 10f)
+            setTextColor(Color.parseColor("#FF8A80"))
+            setPadding(0, 0, 0, 0)
+            layoutParams = LinearLayout.LayoutParams(dpToPx(24), dpToPx(24))
+            setOnClickListener { hideZoneNudgePopup() }
+        }
+
+        topRow.addView(modeBtn0)
+        topRow.addView(modeBtn1)
+        topRow.addView(modeBtn2)
+        topRow.addView(closeBtn)
+        container.addView(topRow)
+
+        // Нижняя строка: стрелочки ◀ ▲ ▼ ▶ + шаг (1px / 5px / 15px) + размер
+        val arrowsRow = LinearLayout(service).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+
+        fun nudgeZone(dx: Int, dy: Int) {
+            val (screenW, screenH) = getScreenDimensions()
+            val stepDx = dx * zoneNudgeStepPx
+            val stepDy = dy * zoneNudgeStepPx
+            if (isZone2) {
+                when (zoneNudgeCornerMode) {
+                    0 -> {
+                        node.compareZoneStartX = (node.compareZoneStartX + stepDx).coerceIn(0, screenW)
+                        node.compareZoneStartY = (node.compareZoneStartY + stepDy).coerceIn(0, screenH)
+                    }
+                    2 -> {
+                        node.compareZoneEndX = (node.compareZoneEndX + stepDx).coerceIn(0, screenW)
+                        node.compareZoneEndY = (node.compareZoneEndY + stepDy).coerceIn(0, screenH)
+                    }
+                    else -> {
+                        node.compareZoneStartX = (node.compareZoneStartX + stepDx).coerceIn(0, screenW)
+                        node.compareZoneStartY = (node.compareZoneStartY + stepDy).coerceIn(0, screenH)
+                        node.compareZoneEndX = (node.compareZoneEndX + stepDx).coerceIn(0, screenW)
+                        node.compareZoneEndY = (node.compareZoneEndY + stepDy).coerceIn(0, screenH)
+                    }
+                }
+            } else {
+                when (zoneNudgeCornerMode) {
+                    0 -> {
+                        node.textZoneStartX = (node.textZoneStartX + stepDx).coerceIn(0, screenW)
+                        node.textZoneStartY = (node.textZoneStartY + stepDy).coerceIn(0, screenH)
+                    }
+                    2 -> {
+                        node.textZoneEndX = (node.textZoneEndX + stepDx).coerceIn(0, screenW)
+                        node.textZoneEndY = (node.textZoneEndY + stepDy).coerceIn(0, screenH)
+                    }
+                    else -> {
+                        node.textZoneStartX = (node.textZoneStartX + stepDx).coerceIn(0, screenW)
+                        node.textZoneStartY = (node.textZoneStartY + stepDy).coerceIn(0, screenH)
+                        node.textZoneEndX = (node.textZoneEndX + stepDx).coerceIn(0, screenW)
+                        node.textZoneEndY = (node.textZoneEndY + stepDy).coerceIn(0, screenH)
+                    }
+                }
+            }
+            syncZoneMarkerPositions(node, isZone2)
+            updateZoneNudgePopupPosition(node, isZone2)
+            invalidateLines()
+            service.autoSave()
+        }
+
+        fun makeArrowBtn(symbol: String, dx: Int, dy: Int): Button {
+            return Button(service).apply {
+                text = symbol
+                stylePillButton(this, "#263238", "#455A64", 7, 12f)
+                setPadding(0, 0, 0, 0)
+                layoutParams = LinearLayout.LayoutParams(dpToPx(32), dpToPx(30)).apply {
+                    setMargins(0, 0, dpToPx(3), 0)
+                }
+                setOnClickListener { nudgeZone(dx, dy) }
+            }
+        }
+
+        arrowsRow.addView(makeArrowBtn("◀", -1, 0))
+        arrowsRow.addView(makeArrowBtn("▲", 0, -1))
+        arrowsRow.addView(makeArrowBtn("▼", 0, 1))
+        arrowsRow.addView(makeArrowBtn("▶", 1, 0))
+
+        val stepBtn = Button(service).apply {
+            text = "${zoneNudgeStepPx}px"
+            stylePillButton(this, "#1E293B", "#3B82F6", 7, 10.5f)
+            setTextColor(Color.parseColor("#93C5FD"))
+            setPadding(dpToPx(4), 0, dpToPx(4), 0)
+            layoutParams = LinearLayout.LayoutParams(dpToPx(40), dpToPx(30)).apply {
+                setMargins(dpToPx(2), 0, dpToPx(4), 0)
+            }
+            setOnClickListener {
+                zoneNudgeStepPx = when (zoneNudgeStepPx) {
+                    1 -> 5
+                    5 -> 15
+                    else -> 1
+                }
+                text = "${zoneNudgeStepPx}px"
+            }
+        }
+        arrowsRow.addView(stepBtn)
+
+        val sizeTv = TextView(service).apply {
+            setTextColor(Color.parseColor("#B0BEC5"))
+            setScaledTextSize(9.5f)
+            gravity = Gravity.CENTER_VERTICAL or Gravity.END
+            layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        zoneNudgeSizeTextView = sizeTv
+        arrowsRow.addView(sizeTv)
+
+        container.addView(arrowsRow)
+        updateModeButtonsStyle()
+
+        val params = WindowManager.LayoutParams(
+            dpToPx(246),
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+        }
+
+        zoneNudgePopupView = container
+        zoneNudgeParams = params
+        try {
+            windowManager.addView(container, params)
+            updateZoneNudgePopupPosition(node, isZone2)
+        } catch (_: Exception) {}
     }
 
     fun createSwipeEndMarker(node: TargetNode) {
@@ -5334,11 +5895,40 @@ class UIManager(private val service: AutoClickService) {
                     style = Paint.Style.FILL
                     isAntiAlias = true
                 }
+                private val zoneFillPaint = Paint().apply {
+                    style = Paint.Style.FILL
+                    isAntiAlias = true
+                }
+                private val zoneShadowStrokePaint = Paint().apply {
+                    style = Paint.Style.STROKE
+                    color = Color.parseColor("#AA000000")
+                    strokeWidth = dpToPx(3).toFloat()
+                    isAntiAlias = true
+                }
+                private val zoneStrokePaint = Paint().apply {
+                    style = Paint.Style.STROKE
+                    strokeWidth = (1.5f * resources.displayMetrics.density)
+                    isAntiAlias = true
+                }
+                private val zoneLabelBgPaint = Paint().apply {
+                    style = Paint.Style.FILL
+                    color = Color.parseColor("#D9101824")
+                    isAntiAlias = true
+                }
+                private val zoneLabelTextPaint = Paint().apply {
+                    color = Color.WHITE
+                    textSize = 10f * resources.displayMetrics.density
+                    typeface = Typeface.DEFAULT_BOLD
+                    isAntiAlias = true
+                }
                 private val pathLocCache = IntArray(2)
                 private val cachePath = android.graphics.Path()
                 
                 override fun onDraw(canvas: Canvas) {
                     super.onDraw(canvas)
+                    // Во время работы макроса не рисуем линии и рамки зон поверх экрана,
+                    // чтобы они никогда не попадали на скриншоты takeScreenshot!
+                    if (service.isPlaying) return
                     
                     getLocationOnScreen(pathLocCache)
                     screenOffsetX = pathLocCache[0]
@@ -5350,136 +5940,163 @@ class UIManager(private val service: AutoClickService) {
                     for (node in service.nodes) {
                         if (!node.isVisible) continue
                         
-                        if (node.triggerMode == 0 && !node.dynamicColorUpdate && node.compareToNodeId == null && node.colorCompareX != null && node.colorCompareY != null) {
-                            val params = nodeParams[node.id]
-                            if (params != null) {
-                                val startX = params.x + dpToPx(30).toFloat()
-                                val startY = params.y + dpToPx(30).toFloat()
-                                val endX = node.colorCompareX!!.toFloat()
-                                val endY = node.colorCompareY!!.toFloat()
-                                canvas.drawLine(startX, startY, endX, endY, Paint().apply {
-                                    color = Color.parseColor("#88FF00FF") // Magenta with alpha
-                                    strokeWidth = dpToPx(2).toFloat()
-                                    style = Paint.Style.STROKE
-                                    pathEffect = android.graphics.DashPathEffect(floatArrayOf(10f, 10f), 0f)
-                                })
+                        if (service.showLines) {
+                            if (node.triggerMode == 0 && !node.dynamicColorUpdate && node.compareToNodeId == null && node.colorCompareX != null && node.colorCompareY != null) {
+                                val params = nodeParams[node.id]
+                                if (params != null) {
+                                    val startX = params.x + dpToPx(30).toFloat()
+                                    val startY = params.y + dpToPx(30).toFloat()
+                                    val endX = node.colorCompareX!!.toFloat()
+                                    val endY = node.colorCompareY!!.toFloat()
+                                    canvas.drawLine(startX, startY, endX, endY, Paint().apply {
+                                        color = Color.parseColor("#88FF00FF") // Magenta with alpha
+                                        strokeWidth = dpToPx(2).toFloat()
+                                        style = Paint.Style.STROKE
+                                        pathEffect = android.graphics.DashPathEffect(floatArrayOf(10f, 10f), 0f)
+                                    })
+                                }
                             }
-                        }
 
-                        // Swipe line
-                        if (node.isSwipe) {
-                            val params = nodeParams[node.id]
-                            if (params != null) {
-                                val startX = params.x + dpToPx(30).toFloat()
-                                val startY = params.y + dpToPx(30).toFloat()
-                                
-                                var finalEndX = node.swipeEndX.toFloat()
-                                var finalEndY = node.swipeEndY.toFloat()
-                                
-                                if (node.swipeTargetNodeId != null) {
-                                    val tNode = service.nodes.find { it.id == node.swipeTargetNodeId }
-                                    if (tNode != null) {
-                                        val tParams = nodeParams[tNode.id]
-                                        if (tParams != null) {
-                                            finalEndX = tParams.x + dpToPx(30).toFloat()
-                                            finalEndY = tParams.y + dpToPx(30).toFloat()
+                            // Swipe line
+                            if (node.isSwipe) {
+                                val params = nodeParams[node.id]
+                                if (params != null) {
+                                    val startX = params.x + dpToPx(30).toFloat()
+                                    val startY = params.y + dpToPx(30).toFloat()
+                                    
+                                    var finalEndX = node.swipeEndX.toFloat()
+                                    var finalEndY = node.swipeEndY.toFloat()
+                                    
+                                    if (node.swipeTargetNodeId != null) {
+                                        val tNode = service.nodes.find { it.id == node.swipeTargetNodeId }
+                                        if (tNode != null) {
+                                            val tParams = nodeParams[tNode.id]
+                                            if (tParams != null) {
+                                                finalEndX = tParams.x + dpToPx(30).toFloat()
+                                                finalEndY = tParams.y + dpToPx(30).toFloat()
+                                            }
                                         }
                                     }
-                                }
-                                
-                                val endX = finalEndX
-                                val endY = finalEndY
-                                
-                                var pDX = endX.toFloat() - startX.toFloat()
-                                var pDY = endY.toFloat() - startY.toFloat()
-                                
-                                if (node.swipePathPoints.isNotEmpty()) {
-                                    cachePath.reset()
-                                    cachePath.moveTo(node.swipePathPoints[0].first, node.swipePathPoints[0].second)
-                                    for (i in 1 until node.swipePathPoints.size) {
-                                        cachePath.lineTo(node.swipePathPoints[i].first, node.swipePathPoints[i].second)
-                                    }
-                                    canvas.drawPath(cachePath, linePaint)
                                     
-                                    val n = node.swipePathPoints.size
-                                    if (n >= 2) {
-                                        pDX = node.swipePathPoints[n - 1].first - node.swipePathPoints[n - 2].first
-                                        pDY = node.swipePathPoints[n - 1].second - node.swipePathPoints[n - 2].second
+                                    val endX = finalEndX
+                                    val endY = finalEndY
+                                    
+                                    var pDX = endX.toFloat() - startX.toFloat()
+                                    var pDY = endY.toFloat() - startY.toFloat()
+                                    
+                                    if (node.swipePathPoints.isNotEmpty()) {
+                                        cachePath.reset()
+                                        cachePath.moveTo(node.swipePathPoints[0].first, node.swipePathPoints[0].second)
+                                        for (i in 1 until node.swipePathPoints.size) {
+                                            cachePath.lineTo(node.swipePathPoints[i].first, node.swipePathPoints[i].second)
+                                        }
+                                        canvas.drawPath(cachePath, linePaint)
+                                        
+                                        val n = node.swipePathPoints.size
+                                        if (n >= 2) {
+                                            pDX = node.swipePathPoints[n - 1].first - node.swipePathPoints[n - 2].first
+                                            pDY = node.swipePathPoints[n - 1].second - node.swipePathPoints[n - 2].second
+                                        }
+                                    } else {
+                                        canvas.drawLine(startX, startY, endX.toFloat(), endY.toFloat(), linePaint)
                                     }
-                                } else {
-                                    canvas.drawLine(startX, startY, endX.toFloat(), endY.toFloat(), linePaint)
+                                    
+                                    // Draw arrowhead
+                                    val angle = Math.atan2(pDY.toDouble(), pDX.toDouble())
+                                    val arrowLen = dpToPx(15).toFloat()
+                                    
+                                    val p1x = endX - arrowLen * Math.cos(angle - Math.PI / 6)
+                                    val p1y = endY - arrowLen * Math.sin(angle - Math.PI / 6)
+                                    val p2x = endX - arrowLen * Math.cos(angle + Math.PI / 6)
+                                    val p2y = endY - arrowLen * Math.sin(angle + Math.PI / 6)
+                                    
+                                    val path = android.graphics.Path().apply {
+                                        moveTo(endX, endY)
+                                        lineTo(p1x.toFloat(), p1y.toFloat())
+                                        lineTo(p2x.toFloat(), p2y.toFloat())
+                                        close()
+                                    }
+                                    canvas.drawPath(path, arrowPaint)
                                 }
-                                
-                                // Draw arrowhead
-                                val angle = Math.atan2(pDY.toDouble(), pDX.toDouble())
-                                val arrowLen = dpToPx(15).toFloat()
-                                
-                                val p1x = endX - arrowLen * Math.cos(angle - Math.PI / 6)
-                                val p1y = endY - arrowLen * Math.sin(angle - Math.PI / 6)
-                                val p2x = endX - arrowLen * Math.cos(angle + Math.PI / 6)
-                                val p2y = endY - arrowLen * Math.sin(angle + Math.PI / 6)
-                                
-                                val path = android.graphics.Path().apply {
-                                    moveTo(endX, endY)
-                                    lineTo(p1x.toFloat(), p1y.toFloat())
-                                    lineTo(p2x.toFloat(), p2y.toFloat())
-                                    close()
-                                }
-                                canvas.drawPath(path, arrowPaint)
                             }
                         }
                         
-                        // Text/Image fragment zone rectangle
+                        // Рамка Зоны 1 (отображается всегда, пока открыты маркеры Зоны 1)
                         if ((node.triggerMode == 1 || node.triggerMode == 2) && textZoneStartViews.containsKey(node.id)) {
-                            val zonePaint = Paint().apply {
-                                color = Color.parseColor("#8800FF00") // Green semitransparent
-                                style = Paint.Style.STROKE
-                                strokeWidth = dpToPx(3).toFloat()
-                                isAntiAlias = true
-                            }
                             val left = Math.min(node.textZoneStartX, node.textZoneEndX).toFloat()
                             val top = Math.min(node.textZoneStartY, node.textZoneEndY).toFloat()
                             val right = Math.max(node.textZoneStartX, node.textZoneEndX).toFloat()
                             val bottom = Math.max(node.textZoneStartY, node.textZoneEndY).toFloat()
-                            canvas.drawRect(left, top, right, bottom, zonePaint)
+                            val w = (right - left).toInt()
+                            val h = (bottom - top).toInt()
+
+                            zoneFillPaint.color = Color.parseColor("#1A00E676")
+                            canvas.drawRect(left, top, right, bottom, zoneFillPaint)
+
+                            zoneStrokePaint.color = Color.parseColor("#EE00E676")
+                            zoneStrokePaint.pathEffect = null
+                            canvas.drawRect(left, top, right, bottom, zoneShadowStrokePaint)
+                            canvas.drawRect(left, top, right, bottom, zoneStrokePaint)
+
+                            val label = "#${node.id} Зона 1: ${w}×${h}px (нажми ✚ для стрелок)"
+                            val tw = zoneLabelTextPaint.measureText(label)
+                            val lx = left.coerceAtLeast(4f * density)
+                            val ly = if (top > 22f * density) top - 5f * density else bottom + 14f * density
+                            val bgRect = android.graphics.RectF(lx - 4f * density, ly - 11f * density, lx + tw + 4f * density, ly + 3f * density)
+                            canvas.drawRoundRect(bgRect, 4f * density, 4f * density, zoneLabelBgPaint)
+                            zoneLabelTextPaint.color = Color.parseColor("#69F0AE")
+                            canvas.drawText(label, lx, ly, zoneLabelTextPaint)
                         }
 
-                        // Second comparison zone rectangle (Zone 2)
+                        // Рамка Зоны 2 (отображается всегда, пока открыты маркеры Зоны 2)
                         if ((node.triggerMode == 1 || node.triggerMode == 2) && node.compareZoneEnabled && compareZoneStartViews.containsKey(node.id)) {
-                            val zone2Paint = Paint().apply {
-                                color = Color.parseColor("#9900E5FF") // Cyan semitransparent
-                                style = Paint.Style.STROKE
-                                strokeWidth = dpToPx(3).toFloat()
-                                pathEffect = android.graphics.DashPathEffect(floatArrayOf(12f, 8f), 0f)
-                                isAntiAlias = true
-                            }
                             val left = Math.min(node.compareZoneStartX, node.compareZoneEndX).toFloat()
                             val top = Math.min(node.compareZoneStartY, node.compareZoneEndY).toFloat()
                             val right = Math.max(node.compareZoneStartX, node.compareZoneEndX).toFloat()
                             val bottom = Math.max(node.compareZoneStartY, node.compareZoneEndY).toFloat()
-                            canvas.drawRect(left, top, right, bottom, zone2Paint)
+                            val w = (right - left).toInt()
+                            val h = (bottom - top).toInt()
+
+                            zoneFillPaint.color = Color.parseColor("#1A00E5FF")
+                            canvas.drawRect(left, top, right, bottom, zoneFillPaint)
+
+                            zoneStrokePaint.color = Color.parseColor("#EE00E5FF")
+                            zoneStrokePaint.pathEffect = android.graphics.DashPathEffect(floatArrayOf(10f * density, 6f * density), 0f)
+                            canvas.drawRect(left, top, right, bottom, zoneShadowStrokePaint)
+                            canvas.drawRect(left, top, right, bottom, zoneStrokePaint)
+
+                            val label = "#${node.id} Зона 2: ${w}×${h}px (нажми ✚ для стрелок)"
+                            val tw = zoneLabelTextPaint.measureText(label)
+                            val lx = left.coerceAtLeast(4f * density)
+                            val ly = if (top > 22f * density) top - 5f * density else bottom + 14f * density
+                            val bgRect = android.graphics.RectF(lx - 4f * density, ly - 11f * density, lx + tw + 4f * density, ly + 3f * density)
+                            canvas.drawRoundRect(bgRect, 4f * density, 4f * density, zoneLabelBgPaint)
+                            zoneLabelTextPaint.color = Color.parseColor("#80D8FF")
+                            canvas.drawText(label, lx, ly, zoneLabelTextPaint)
                         }
                         
                         // "Target ID" (leads to) logic lines
-                        val targetIds = listOfNotNull(node.nextNodeIdOnSuccess, node.nextNodeIdOnFail, node.linkedConditionNodeId)
-                        for (targetId in targetIds.filter { it >= 0 }) {
-                            val targetNode = service.nodes.find { it.id == targetId }
-                            if (targetNode != null) {
-                                val paramsStart = nodeParams[node.id]
-                                val paramsEnd = nodeParams[targetNode.id]
-                                if (paramsStart != null && paramsEnd != null) {
-                                    val startX = paramsStart.x + dpToPx(30).toFloat()
-                                    val startY = paramsStart.y + dpToPx(30).toFloat()
-                                    val endX = paramsEnd.x + dpToPx(30).toFloat()
-                                    val endY = paramsEnd.y + dpToPx(30).toFloat()
-                                    
-                                    val oldColor = linePaint.color
-                                    linePaint.color = Color.parseColor("#88FF00FF") // Magenta for logic links
-                                    val dashedPaint = Paint(linePaint).apply {
-                                        pathEffect = android.graphics.DashPathEffect(floatArrayOf(15f, 15f), 0f)
+                        if (service.showLines) {
+                            val targetIds = listOfNotNull(node.nextNodeIdOnSuccess, node.nextNodeIdOnFail, node.linkedConditionNodeId)
+                            for (targetId in targetIds.filter { it >= 0 }) {
+                                val targetNode = service.nodes.find { it.id == targetId }
+                                if (targetNode != null) {
+                                    val paramsStart = nodeParams[node.id]
+                                    val paramsEnd = nodeParams[targetNode.id]
+                                    if (paramsStart != null && paramsEnd != null) {
+                                        val startX = paramsStart.x + dpToPx(30).toFloat()
+                                        val startY = paramsStart.y + dpToPx(30).toFloat()
+                                        val endX = paramsEnd.x + dpToPx(30).toFloat()
+                                        val endY = paramsEnd.y + dpToPx(30).toFloat()
+                                        
+                                        val oldColor = linePaint.color
+                                        linePaint.color = Color.parseColor("#88FF00FF") // Magenta for logic links
+                                        val dashedPaint = Paint(linePaint).apply {
+                                            pathEffect = android.graphics.DashPathEffect(floatArrayOf(15f, 15f), 0f)
+                                        }
+                                        canvas.drawLine(startX, startY, endX, endY, dashedPaint)
+                                        linePaint.color = oldColor
                                     }
-                                    canvas.drawLine(startX, startY, endX, endY, dashedPaint)
-                                    linePaint.color = oldColor
                                 }
                             }
                         }
@@ -5502,7 +6119,9 @@ class UIManager(private val service: AutoClickService) {
             }
             windowManager.addView(linesOverlayView, params)
         }
-        linesOverlayView?.visibility = if (service.showLines) View.VISIBLE else View.INVISIBLE; linesOverlayView?.invalidate()
+        val hasActiveZones = textZoneStartViews.isNotEmpty() || compareZoneStartViews.isNotEmpty()
+        linesOverlayView?.visibility = if (!service.isPlaying && (service.showLines || hasActiveZones)) View.VISIBLE else View.INVISIBLE
+        linesOverlayView?.invalidate()
         
         // Ensure floating bar stays on top of lines
         bringControlBarToFront()
@@ -5566,6 +6185,7 @@ class UIManager(private val service: AutoClickService) {
         removeTextZoneMarkers(id)
         removeCompareZoneMarkers(id)
         removeColorCompareMarker(id)
+        if (zoneNudgeNodeId == id) hideZoneNudgePopup()
         service.nodes.removeAll { it.id == id }
         service.autoSave()
         updateMenu()
@@ -5599,6 +6219,7 @@ class UIManager(private val service: AutoClickService) {
     }
 
     fun removeAllViews() {
+        hideZoneNudgePopup()
         try { floatingControlBar?.let { windowManager.removeView(it) } } catch(e: Exception){}
         try { modMenu?.let { windowManager.removeView(it) } } catch(e: Exception){}
         try { nodeViews.values.forEach { windowManager.removeView(it) } } catch(e: Exception){}
